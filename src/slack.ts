@@ -85,6 +85,23 @@ export function startSlack(opts: SlackOptions): void {
     }
     return lines;
   };
+  /** Download a text-ish attachment's content (needs files:read). */
+  const fetchFileText = async (f: {
+    name?: string; mimetype?: string; size?: number; url_private_download?: string;
+  }): Promise<string | null> => {
+    if (!f.url_private_download || (f.size ?? 0) > 200_000) return null;
+    const okType = (f.mimetype ?? '').startsWith('text/') ||
+      /\.(md|txt|tsx?|jsx?|json|py|rb|go|rs|ya?ml|toml|csv|log|sql|sh)$/i.test(f.name ?? '');
+    if (!okType) return null;
+    try {
+      const res = await fetch(f.url_private_download, {
+        headers: { authorization: `Bearer ${botToken}` },
+      });
+      return res.ok ? (await res.text()).slice(0, 10_000) : null;
+    } catch {
+      return null;
+    }
+  };
   /** 👀 on receipt → ✅ when replies are posted (myagent's ack pattern). */
   const react = (channel: string, ts: string, name: string) =>
     app.client.reactions.add({ channel, timestamp: ts, name }).catch(() => {});
@@ -156,6 +173,32 @@ export function startSlack(opts: SlackOptions): void {
     const ok = results.filter(r => r.status === 'success');
     const kept = results.filter(r => r.changed).map(r => `\`${r.branch}\``).join(', ');
     await sayChan(`🏁 done: ${ok.length}/${results.length} succeeded${kept ? `\nbranches: ${kept}` : ''}\nreport: \`${report}\``);
+
+    // Artifacts → files + channel canvas (scopes: files:write, canvases:write)
+    const reportMd = fs.existsSync(report) ? fs.readFileSync(report, 'utf8') : '';
+    if (reportMd) {
+      void app.client.conversations.canvases.create({
+        channel_id: runChannel,
+        title: `squad run — ${goal.slice(0, 60)}`,
+        document_content: { type: 'markdown', markdown: reportMd },
+      }).catch(e => console.error('canvas create failed (needs canvases:write):', e));
+      void app.client.files.uploadV2({
+        channel_id: runChannel,
+        filename: 'report.md',
+        content: reportMd,
+        initial_comment: '📋 run report',
+      }).catch(e => console.error('file upload failed (needs files:write):', e));
+    }
+    for (const r of results.filter(x => x.changed)) {
+      const diffPath = path.join(runDir, r.task.id, 'diff.patch');
+      if (!fs.existsSync(diffPath)) continue;
+      void app.client.files.uploadV2({
+        channel_id: runChannel,
+        filename: `${r.task.id}.diff.patch`,
+        content: fs.readFileSync(diffPath, 'utf8'),
+        initial_comment: `diff — ${r.task.title}`,
+      }).catch(() => {});
+    }
   };
 
   app.event('app_mention', async ({ event, say }) => {
@@ -212,21 +255,32 @@ export function startSlack(opts: SlackOptions): void {
       const e = event as {
         bot_id?: string; subtype?: string; text?: string; user?: string;
         thread_ts?: string; ts: string; channel?: string;
+        files?: { name?: string; mimetype?: string; size?: number; url_private_download?: string }[];
       };
-      const skip = e.bot_id ? 'bot' : e.subtype ? `subtype:${e.subtype}` :
-        !e.text?.trim() ? 'empty' : !e.user ? 'no-user' : !e.channel ? 'no-channel' :
-        botUserId && e.text.includes(`<@${botUserId}>`) ? 'self-mention' : null;
+      // file_share messages are legit user input — don't drop them.
+      const subtype = e.subtype === 'file_share' ? undefined : e.subtype;
+      const skip = e.bot_id ? 'bot' : subtype ? `subtype:${subtype}` :
+        !e.text?.trim() && !e.files?.length ? 'empty' : !e.user ? 'no-user' : !e.channel ? 'no-channel' :
+        botUserId && e.text?.includes(`<@${botUserId}>`) ? 'self-mention' : null;
       if (skip) {
         console.log('[ambient] skip:', skip, JSON.stringify(e.text ?? '').slice(0, 80));
         return;
       }
       const channel = e.channel!;
-      const text = e.text!;
       const user = e.user!;
       void react(channel, e.ts, 'eyes');
       try {
         const author = await displayName(user);
-        appendMessage(channel, { author: 'user', name: user, display: author, text });
+        // Attachments: pull text-ish file contents in as context (files:read).
+        let text = e.text ?? '';
+        for (const f of e.files ?? []) {
+          const content = await fetchFileText(f);
+          if (content) text += `\n[添付: ${f.name ?? 'file'}]\n${content}`;
+        }
+        appendMessage(channel, {
+          author: 'user', name: user, display: author,
+          text: text || `[添付: ${(e.files ?? []).map(f => f.name).join(', ')}]`,
+        });
         const context = await channelContext(channel);
         const selected = await pickResponders(
           personas(),
