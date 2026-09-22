@@ -15,12 +15,17 @@ export async function runSquad(
   const running = new Map<string, { startedAt: number; promise: Promise<void> }>();
   const queue = [...tasks];
 
+  const emit = opts.onEvent ?? (() => {});
   const heartbeat = setInterval(() => {
     if (running.size === 0) return;
     const line = [...running.entries()]
       .map(([id, r]) => `${id} (${fmtDur(Date.now() - r.startedAt)})`)
       .join(', ');
     console.log(`  … running: ${line}`);
+    emit({
+      type: 'heartbeat',
+      running: [...running.entries()].map(([id, r]) => ({ id, elapsedMs: Date.now() - r.startedAt })),
+    });
   }, 30_000);
 
   const depState = (t: SquadTask): 'ready' | 'blocked' | 'dead' => {
@@ -50,6 +55,7 @@ export async function runSquad(
           };
           results.set(task.id, r);
           console.log(`[–] ${task.id} skipped (dependency failed)`);
+          emit({ type: 'task-skip', taskId: task.id, reason: 'dependency failed' });
           continue;
         }
         if (state === 'blocked') {
@@ -59,6 +65,7 @@ export async function runSquad(
         queue.splice(i, 1);
         launched = true;
         console.log(`[+] ${task.id} started — ${task.title}`);
+        emit({ type: 'task-start', taskId: task.id, title: task.title });
         const startedAt = Date.now();
         const promise = runTask(task, opts, runDir).then(r => {
           results.set(task.id, r);
@@ -66,6 +73,7 @@ export async function runSquad(
           const mark = r.status === 'success' ? '✓' : '✗';
           const extra = r.changed ? ' changes kept' : ' no changes';
           console.log(`[${mark}] ${task.id} ${r.status} in ${fmtDur(r.durationMs)}${extra}${r.error ? ` — ${r.error}` : ''}`);
+          emit({ type: 'task-done', taskId: task.id, status: r.status, durationMs: r.durationMs, changed: r.changed, error: r.error });
         });
         running.set(task.id, { startedAt, promise });
       }
@@ -83,6 +91,7 @@ export async function runSquad(
             };
             results.set(task.id, r);
             console.log(`[–] ${task.id} skipped (unresolvable deps)`);
+            emit({ type: 'task-skip', taskId: task.id, reason: 'unresolvable dependencies' });
           }
         }
         break;
@@ -93,5 +102,7 @@ export async function runSquad(
     clearInterval(heartbeat);
   }
 
-  return tasks.map(t => results.get(t.id)!);
+  const ordered = tasks.map(t => results.get(t.id)!);
+  emit({ type: 'run-done', results: ordered });
+  return ordered;
 }

@@ -39,4 +39,13 @@ export interface SquadOptions {
   personas?: Map<string, Persona>;
   /** Default persona for tasks without one. */
   defaultPersona?: string;
+  /** Optional progress sink (web UI / integrations). */
+  onEvent?: (e: SquadEvent) => void;
 }
+
+export type SquadEvent =
+  | { type: 'task-start'; taskId: string; title: string }
+  | { type: 'task-done'; taskId: string; status: TaskStatus; durationMs: number; changed: boolean; error?: string }
+  | { type: 'task-skip'; taskId: string; reason: string }
+  | { type: 'heartbeat'; running: { id: string; elapsedMs: number }[] }
+  | { type: 'run-done'; results: TaskResult[] };

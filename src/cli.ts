@@ -10,6 +10,7 @@ import { planTasks } from './planner.js';
 import { loadTasksFile, writeReport } from './report.js';
 import { listPersonas, getPersona, scaffoldPersona } from './persona.js';
 import { personaSay, talkRepl } from './talk.js';
+import { serve } from './server.js';
 import type { SquadOptions, TaskResult } from './types.js';
 
 const USAGE = `devin-squad — run a team of parallel Devin CLI workers in git worktrees
@@ -21,6 +22,7 @@ Usage:
   devin-squad personas                             List personas (project + global)
   devin-squad persona new <name> [--global]        Scaffold a persona file
   devin-squad talk <persona> [message]             Chat with a persona (REPL if no message)
+  devin-squad serve [--port 3333]                  Local web UI (chat room + run board)
 
 Options:
   --repo <path>          Target git repo (default: cwd)
@@ -232,6 +234,21 @@ try {
   else if (cmd === 'talk') {
     const rest = process.argv.slice(3).filter(a => !a.startsWith('--'));
     await cmdTalk(rest[0], rest.slice(1).join(' ') || undefined, flags);
+  }
+  else if (cmd === 'serve') {
+    const opts = resolveOptions(flags);
+    const port = Number(flags.port ?? 3333);
+    serve({
+      repo: opts.repo,
+      port,
+      concurrency: opts.concurrency,
+      permissionMode: opts.permissionMode,
+      timeoutMs: opts.timeoutMs,
+      model: opts.model,
+      extraArgs: opts.extraArgs,
+    });
+    // keep process alive
+    await new Promise(() => {});
   }
   else {
     console.error(`unknown command: ${cmd}\n\n${USAGE}`);
