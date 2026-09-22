@@ -142,6 +142,10 @@ Slack連携は**Socket Mode**を使います。devin-squadからSlackに接続�
 | `reactions:write`      | 受信確認などのリアクションを付ける・外す                       |
 | `files:read`           | 対応するテキスト・コード添付を読む                             |
 
+`reactions:read`は不要です。devin-squadはリアクション履歴を読み取らず、
+受信確認のリアクションを付け外しするために`reactions:write`だけを使います。
+すでに`reactions:read`を追加していても動作に問題はありませんが、最小権限にするなら外せます。
+
 使いたい機能に応じて、次の権限も追加します。
 
 | 追加のBot scope   | 有効になる機能                                                       |

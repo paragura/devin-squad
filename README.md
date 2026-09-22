@@ -162,6 +162,11 @@ from the manifest:
 | `reactions:write`      | Add/remove acknowledgement reactions                          |
 | `files:read`           | Read supported text/code attachments                          |
 
+`reactions:read` is not required. devin-squad does not inspect reaction
+history; it only uses `reactions:write` to add and remove acknowledgement
+reactions. Leaving `reactions:read` installed is harmless, but you can remove it
+to keep the app least-privileged.
+
 Add optional scopes only for the features you want:
 
 | Optional bot scope | Enables                                                               |
