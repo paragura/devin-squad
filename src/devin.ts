@@ -1,5 +1,6 @@
 import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export interface DevinRunResult {
@@ -92,10 +93,13 @@ export function cleanSessions(dir: string, olderThanSec = 60): void {
         last_activity_at?: number;
       }[];
       const cutoff = Date.now() / 1000 - olderThanSec;
+      const lockDir = path.join(os.homedir(), '.local', 'share', 'devin', 'cli', 'session_locks');
       for (const s of list) {
-        if (s.id && (s.last_activity_at ?? 0) < cutoff) {
-          execFile('devin', ['rm', s.id, '--force'], { cwd: dir }, () => {});
-        }
+        if (!s.id || (s.last_activity_at ?? 0) >= cutoff) continue;
+        // devin rm refuses while a lockfile is held (e.g. by Devin Desktop
+        // showing the session). These are disposable calls — drop the lock.
+        try { fs.unlinkSync(path.join(lockDir, `${s.id}.lock`)); } catch { /* absent */ }
+        execFile('devin', ['rm', s.id, '--force'], { cwd: dir }, () => {});
       }
     } catch { /* cleanup is best-effort */ }
   });
