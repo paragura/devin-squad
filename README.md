@@ -22,6 +22,28 @@ npm link               # optional: puts `devin-squad` on PATH
 
 Requires: Node ≥ 20, git, and an authenticated `devin` CLI (`devin auth status`).
 
+Secrets/tokens go in `./.env` (auto-loaded via `process.loadEnvFile`,
+git-ignored):
+
+```bash
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+```
+
+## Running the app
+
+Two long-running entry points — usually you want both:
+
+```bash
+devin-squad serve --port 3333 --repo .   # Web UI: chat + run board
+devin-squad slack --repo .               # Slack bot (socket mode)
+```
+
+Both share channel logs under `~/.devin-squad/channels/<id>.jsonl`, so Slack
+conversations appear in the Web UI in real time (pick the channel in the room
+selector). Personas live in `~/.devin-squad/personas/` — copy the ones from
+[`examples/personas/`](examples/personas/) to get started.
+
 ## Usage
 
 ```bash
@@ -92,8 +114,16 @@ Two ways personas join the conversation:
   lightweight router call decides which 0–2 personas fit the message, and those
   personas reply to the channel under their own name and avatar (`username` +
   `icon_emoji`/`icon_url` per message). Disable with `--no-ambient`.
-- **Explicit mention** — `@squad <persona> <msg>` talks to that persona
+- **Explicit mention** — `@devin-squad <persona> <msg>` talks to that persona
   directly, `plan`/`run` work as below.
+
+After each reply a judge call decides `continue` / `done` / `ask_human`, so
+personas keep discussing among themselves (up to 8 rounds) and escalate to you
+through a `secretary` persona when a human decision is needed. Add
+`examples/personas/secretary.md` to your personas dir to customize it.
+`@devin-squad run <goal>` also creates a dedicated `squad-<goal>` channel and
+streams progress, `report.md`, `diff.patch` files, and a channel canvas there
+(needs `channels:manage`, `files:write`, `canvases:write`).
 
 Commands via mention:
 
@@ -137,6 +167,11 @@ Options: `--repo`, `--concurrency` (default 3), `--mode` (default `bypass`;
 
 Non-interactive runs need `--respect-workspace-trust false` (worktrees are
 untrusted dirs) — devin-squad passes this automatically.
+
+Internal `devin` calls (router, judge, ambient personas, workers) run with an
+isolated `XDG_DATA_HOME` at `~/.devin-squad/devin-home/` — credentials and
+workspace trust are symlinked in, but sessions live in a private `sessions.db`
+so they never appear in Devin Desktop. Old sessions are reaped automatically.
 
 ## Roadmap
 
