@@ -75,6 +75,25 @@ Opens a local chat-room UI: pick a persona on the left to talk to it, or use
 the right panel to turn a goal into a planned task list and launch a squad run
 with live per-task status.
 
+## Slack bot (socket mode)
+
+```bash
+export SLACK_BOT_TOKEN=xoxb-...   # scopes: app_mentions:read, chat:write
+export SLACK_APP_TOKEN=xapp-...   # app-level token, connections:write
+devin-squad slack --repo .
+```
+
+Mention the bot in a channel:
+
+- `@squad personas` — list personas
+- `@squad strict-reviewer このコードを見て` — chat as that persona
+- `@squad plan <goal>` — decompose only
+- `@squad run <goal>` — plan → parallel run → progress + report in thread
+
+Setup: create a Slack app at api.slack.com, enable Socket Mode, add an
+app-level token with `connections:write`, add bot scopes above, install to
+your workspace.
+
 `tasks.json`:
 
 ```json

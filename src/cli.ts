@@ -11,6 +11,7 @@ import { loadTasksFile, writeReport } from './report.js';
 import { listPersonas, getPersona, scaffoldPersona } from './persona.js';
 import { personaSay, talkRepl } from './talk.js';
 import { serve } from './server.js';
+import { startSlack } from './slack.js';
 import type { SquadOptions, TaskResult } from './types.js';
 
 const USAGE = `devin-squad — run a team of parallel Devin CLI workers in git worktrees
@@ -23,6 +24,7 @@ Usage:
   devin-squad persona new <name> [--global]        Scaffold a persona file
   devin-squad talk <persona> [message]             Chat with a persona (REPL if no message)
   devin-squad serve [--port 3333]                  Local web UI (chat room + run board)
+  devin-squad slack                                Slack bot (socket mode; needs SLACK_BOT_TOKEN + SLACK_APP_TOKEN)
 
 Options:
   --repo <path>          Target git repo (default: cwd)
@@ -248,6 +250,18 @@ try {
       extraArgs: opts.extraArgs,
     });
     // keep process alive
+    await new Promise(() => {});
+  }
+  else if (cmd === 'slack') {
+    const opts = resolveOptions(flags);
+    startSlack({
+      repo: opts.repo,
+      concurrency: opts.concurrency,
+      permissionMode: opts.permissionMode,
+      timeoutMs: opts.timeoutMs,
+      model: opts.model,
+      extraArgs: opts.extraArgs,
+    });
     await new Promise(() => {});
   }
   else {
