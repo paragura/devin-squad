@@ -222,6 +222,10 @@ if (cmd === 'help' || flags.help) {
   console.log(USAGE);
   process.exit(0);
 }
+// Load ./.env if present (Slack tokens etc.) — no dependency, Node ≥20.12.
+try {
+  process.loadEnvFile?.(path.resolve('.env'));
+} catch { /* no .env — fine */ }
 checkDevin();
 try {
   if (cmd === 'run') await cmdRun(flags);

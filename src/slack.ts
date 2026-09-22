@@ -23,12 +23,14 @@ export interface SlackOptions {
   ambient: boolean;
 }
 
-const HELP = `使い方:
-- \`@squad personas\` — ペルソナ一覧
-- \`@squad <persona> <msg>\` — そのペルソナと会話
-- \`@squad plan <goal>\` — タスク分解だけする
-- \`@squad run <goal>\` — 分解→並列実行→レポートまで全部
+function helpText(botMention: string): string {
+  return `使い方:
+- \`${botMention} personas\` — ペルソナ一覧
+- \`${botMention} <persona> <msg>\` — そのペルソナと会話
+- \`${botMention} plan <goal>\` — タスク分解だけする
+- \`${botMention} run <goal>\` — 分解→並列実行→レポートまで全部
 ambient モードではメンションなしの発言にも関係するペルソナが勝手に反応します`;
+}
 
 // Slack's Authorship type makes icon_emoji and icon_url mutually exclusive,
 // so the identity is a union where exactly one icon key is present.
@@ -56,7 +58,7 @@ async function pickResponders(
   fs.mkdirSync(routerDir, { recursive: true });
   const roster = personas.map(p => `- ${p.name}: ${p.description}`).join('\n');
   const threadNote = threadPersona
-    ? `\nこのメッセージは「${threadPersona}」が応答してきたスレッド内の発言です。`
+    ? `\nこのチャンネルで直前に「${threadPersona}」が応答しています。会話の続きならそのペルソナを優先してください。`
     : '';
   const prompt = `You are a router for a team chat tool. Decide which personas should respond to the following Slack message.
 
@@ -102,17 +104,17 @@ export function startSlack(opts: SlackOptions): void {
 
   const app = new App({ token: botToken, appToken, socketMode: true });
   const personas = () => [...listPersonas(opts.repo).values()];
-  /** thread_ts → last persona that spoke there (router hint). */
-  const threadPersona = new Map<string, string>();
+  /** channel → last persona that spoke (router hint for conversation continuity). */
+  const lastSpeaker = new Map<string, string>();
   /** Own user id, needed so ambient mode can skip messages that mention the bot
    * (they already fire app_mention; handling both would double-respond). */
   let botUserId: string | undefined;
 
-  const runGoal = async (goal: string, sayThread: (text: string) => Promise<unknown>) => {
-    await sayThread('📐 planning…');
+  const runGoal = async (goal: string, sayChan: (text: string) => Promise<unknown>) => {
+    await sayChan('📐 planning…');
     const tasks = await planTasks(goal, { cwd: opts.repo, model: opts.model, timeoutMs: opts.timeoutMs });
-    await sayThread(tasks.map(t => `• \`${t.id}\` ${t.title}`).join('\n'));
-    await sayThread(`🐝 run start (${tasks.length} tasks)`);
+    await sayChan(tasks.map(t => `• \`${t.id}\` ${t.title}`).join('\n'));
+    await sayChan(`🐝 run start (${tasks.length} tasks)`);
     const runDir = newRunDir(opts.repo);
     fs.writeFileSync(path.join(runDir, 'tasks.json'), JSON.stringify({ goal, tasks }, null, 2));
     const byTask = new Map(tasks.map(t => [t.id, t]));
@@ -133,53 +135,52 @@ export function startSlack(opts: SlackOptions): void {
           ev.type === 'task-start' ? `▶️ ${who}${ev.taskId} started` :
           ev.type === 'task-done' ? `${ev.status === 'success' ? '✅' : '❌'} ${who}${ev.taskId} ${ev.status} (${Math.round(ev.durationMs / 1000)}s)${ev.changed ? ' · changes' : ''}` :
           ev.type === 'task-skip' ? `➖ ${ev.taskId} skipped` : null;
-        if (line) void sayThread(line);
+        if (line) void sayChan(line);
       },
     };
     const results = await runSquad(tasks, squadOpts, runDir);
     const report = writeReport(runDir, results, goal);
     const ok = results.filter(r => r.status === 'success');
     const kept = results.filter(r => r.changed).map(r => `\`${r.branch}\``).join(', ');
-    await sayThread(`🏁 done: ${ok.length}/${results.length} succeeded${kept ? `\nbranches: ${kept}` : ''}\nreport: \`${report}\``);
+    await sayChan(`🏁 done: ${ok.length}/${results.length} succeeded${kept ? `\nbranches: ${kept}` : ''}\nreport: \`${report}\``);
   };
 
   app.event('app_mention', async ({ event, say }) => {
     const text = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
-    const threadTs = event.ts;
-    const sayThread = (t: string) => say({ text: t, thread_ts: threadTs });
+    const sayChan = (t: string) => say({ text: t });
     const [head, ...restWords] = text.split(/\s+/);
     const rest = restWords.join(' ');
+    const help = helpText(botUserId ? `<@${botUserId}>` : 'このボット');
 
     try {
-      if (!text || head === 'help') return void (await sayThread(HELP));
+      if (!text || head === 'help') return void (await sayChan(help));
       if (head === 'personas') {
         const list = personas().map(p => `${p.emoji} *${p.name}* — ${p.description}`).join('\n');
-        return void (await sayThread(list || 'no personas'));
+        return void (await sayChan(list || 'no personas'));
       }
       if (head === 'plan') {
-        if (!rest) return void (await sayThread('goal が必要です'));
-        await sayThread('📐 planning…');
+        if (!rest) return void (await sayChan('goal が必要です'));
+        await sayChan('📐 planning…');
         const tasks = await planTasks(rest, { cwd: opts.repo, model: opts.model, timeoutMs: opts.timeoutMs });
-        return void (await sayThread(tasks.map(t => `• \`${t.id}\` ${t.title}`).join('\n')));
+        return void (await sayChan(tasks.map(t => `• \`${t.id}\` ${t.title}`).join('\n')));
       }
       if (head === 'run') {
-        if (!rest) return void (await sayThread('goal が必要です'));
-        return void (await runGoal(rest, sayThread));
+        if (!rest) return void (await sayChan('goal が必要です'));
+        return void (await runGoal(rest, sayChan));
       }
       const persona = getPersona(head, opts.repo);
       if (persona && rest) {
         const reply = await personaSay(persona, rest, { timeoutMs: opts.timeoutMs });
-        threadPersona.set(threadTs, persona.name);
+        lastSpeaker.set(event.channel, persona.name);
         return void (await app.client.chat.postMessage({
           channel: event.channel,
           text: reply,
-          thread_ts: threadTs,
           ...slackIdentity(persona),
         }));
       }
-      await sayThread(HELP);
+      await sayChan(help);
     } catch (err) {
-      await sayThread(`⚠️ error: ${err instanceof Error ? err.message : err}`);
+      await sayChan(`⚠️ error: ${err instanceof Error ? err.message : err}`);
     }
   });
 
@@ -196,7 +197,7 @@ export function startSlack(opts: SlackOptions): void {
           personas(),
           e.user,
           e.text,
-          e.thread_ts ? threadPersona.get(e.thread_ts) : undefined,
+          e.channel ? lastSpeaker.get(e.channel) : undefined,
           { model: opts.routerModel, timeoutMs: opts.timeoutMs }
         );
         for (const persona of selected) {
@@ -205,12 +206,10 @@ export function startSlack(opts: SlackOptions): void {
             `<@${e.user}> said: ${e.text}`,
             { timeoutMs: opts.timeoutMs }
           );
-          const ts = e.thread_ts ?? e.ts;
-          threadPersona.set(ts, persona.name);
+          lastSpeaker.set(e.channel!, persona.name);
           await app.client.chat.postMessage({
             channel: e.channel!,
             text: reply,
-            thread_ts: ts,
             ...slackIdentity(persona),
           });
         }
