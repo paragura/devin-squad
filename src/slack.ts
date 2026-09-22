@@ -197,7 +197,7 @@ export function startSlack(opts: SlackOptions): void {
           user,
           text,
           lastSpeaker.get(channel),
-          { model: opts.routerModel, timeoutMs: opts.timeoutMs }
+          { model: opts.routerModel ?? opts.model, timeoutMs: opts.timeoutMs }
         );
         if (selected.length === 0) {
           void unreact(channel, e.ts, 'eyes');
