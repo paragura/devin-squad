@@ -1,58 +1,37 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { Persona } from './persona.js';
-import { runDevin } from './devin.js';
-
-/**
- * Router sessions are disposable (no resume needed) — delete them so they
- * don't pile up in Devin Desktop's session list. Fire-and-forget.
- */
-function cleanRouterSessions(routerDir: string): void {
-  execFile('devin', ['list', '--format', 'json'], { cwd: routerDir }, (e, out) => {
-    if (e) return;
-    try {
-      const parsed = JSON.parse(out);
-      const list: { id?: string; last_activity_at?: number }[] =
-        Array.isArray(parsed) ? parsed : parsed.sessions ?? [];
-      const cutoff = Date.now() / 1000 - 60;
-      for (const s of list) {
-        // skip sessions that may still be in flight (concurrent messages)
-        if (s.id && (s.last_activity_at ?? 0) < cutoff) {
-          execFile('devin', ['rm', s.id, '--force'], { cwd: routerDir }, () => {});
-        }
-      }
-    } catch { /* cleanup is best-effort */ }
-  });
-}
+import { runDevin, cleanSessions } from './devin.js';
 
 /**
  * Lightweight router: one devin -p call decides which 0-2 personas should
  * respond to a chat message. Returns [] for noise / messages needing no reply.
+ * `context` is the recent "name: text" channel log for continuity.
  */
 export async function pickResponders(
   personas: Persona[],
   author: string,
   text: string,
-  lastSpeaker: string | undefined,
+  context: string[],
   opts: { model?: string; timeoutMs: number }
 ): Promise<Persona[]> {
   if (personas.length === 0) return [];
   const routerDir = path.join(os.homedir(), '.devin-squad', 'router');
   fs.mkdirSync(routerDir, { recursive: true });
   const roster = personas.map(p => `- ${p.name}: ${p.description}`).join('\n');
-  const threadNote = lastSpeaker
-    ? `\n直前に「${lastSpeaker}」が応答しています。会話の続きならそのペルソナを優先してください。`
+  const history = context.length
+    ? `\nRecent conversation:\n${context.join('\n')}\n`
     : '';
-  const prompt = `You are a router for a team chat tool. Decide which personas should respond to the following message.
+  const prompt = `You are a router for a team chat tool. Decide which personas should respond to the LAST message below.
 
 Persona roster:
 ${roster}
-${threadNote}
+${history}
 Rules:
 - Pick 0-2 personas whose role genuinely fits the message.
 - Return [] for small talk between humans, noise, or messages needing no response.
+- If the message continues a persona's reply in the recent conversation, prefer that persona.
 - Reply with ONLY a JSON array of persona names, e.g. ["strict-reviewer"] or []
 
 Message from ${author}: ${text.slice(0, 2000)}`;
@@ -64,7 +43,7 @@ Message from ${author}: ${text.slice(0, 2000)}`;
     timeoutMs: opts.timeoutMs,
     model: opts.model,
   });
-  cleanRouterSessions(routerDir);
+  cleanSessions(routerDir);
   if (r.exitCode !== 0) {
     console.error('[router] devin failed:', r.stderr.slice(0, 200));
     return [];

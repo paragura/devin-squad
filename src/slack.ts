@@ -2,7 +2,8 @@ import { App } from '@slack/bolt';
 import fs from 'node:fs';
 import path from 'node:path';
 import { listPersonas, getPersona, Persona } from './persona.js';
-import { personaSay } from './talk.js';
+import { personaSayOnce } from './talk.js';
+import { appendMessage } from './store.js';
 import { planTasks } from './planner.js';
 import { runSquad } from './scheduler.js';
 import { newRunDir } from './paths.js';
@@ -59,8 +60,31 @@ export function startSlack(opts: SlackOptions): void {
     await next();
   });
   const personas = () => [...listPersonas(opts.repo).values()];
-  /** channel → last persona that spoke (router hint for conversation continuity). */
-  const lastSpeaker = new Map<string, string>();
+  /** user id → display name cache (users.info is per-call, so cache it). */
+  const userNames = new Map<string, string>();
+  const displayName = async (userId: string): Promise<string> => {
+    const hit = userNames.get(userId);
+    if (hit) return hit;
+    try {
+      const r = await app.client.users.info({ user: userId });
+      const name = r.user?.profile?.display_name || r.user?.real_name || userId;
+      userNames.set(userId, name);
+      return name;
+    } catch {
+      return userId;
+    }
+  };
+  /** Recent channel log as "name: text" lines — the personas' shared memory. */
+  const channelContext = async (channel: string): Promise<string[]> => {
+    const r = await app.client.conversations.history({ channel, limit: 15 }).catch(() => undefined);
+    const msgs = (r?.messages ?? []).slice().reverse();
+    const lines: string[] = [];
+    for (const m of msgs) {
+      const who = m.user ? await displayName(m.user) : m.username ?? 'someone';
+      if (m.text?.trim()) lines.push(`${who}: ${m.text}`.slice(0, 300));
+    }
+    return lines;
+  };
   /** 👀 on receipt → ✅ when replies are posted (myagent's ack pattern). */
   const react = (channel: string, ts: string, name: string) =>
     app.client.reactions.add({ channel, timestamp: ts, name }).catch(() => {});
@@ -160,8 +184,17 @@ export function startSlack(opts: SlackOptions): void {
       }
       const persona = getPersona(head, opts.repo);
       if (persona && rest) {
-        const reply = await personaSay(persona, rest, { timeoutMs: opts.timeoutMs });
-        lastSpeaker.set(event.channel, persona.name);
+        const author = await displayName(event.user ?? 'someone');
+        appendMessage(event.channel, { author: 'user', name: event.user ?? '?', display: author, text: rest });
+        const context = await channelContext(event.channel);
+        const reply = await personaSayOnce(persona, `${author}: ${rest}`, context, {
+          timeoutMs: opts.timeoutMs,
+          model: opts.model,
+        });
+        appendMessage(event.channel, {
+          author: 'persona', name: persona.name,
+          display: `${persona.emoji} ${persona.name}`, text: reply,
+        });
         return void (await app.client.chat.postMessage({
           channel: event.channel,
           text: reply,
@@ -192,11 +225,14 @@ export function startSlack(opts: SlackOptions): void {
       const user = e.user!;
       void react(channel, e.ts, 'eyes');
       try {
+        const author = await displayName(user);
+        appendMessage(channel, { author: 'user', name: user, display: author, text });
+        const context = await channelContext(channel);
         const selected = await pickResponders(
           personas(),
-          user,
+          author,
           text,
-          lastSpeaker.get(channel),
+          context,
           { model: opts.routerModel ?? opts.model, timeoutMs: opts.timeoutMs }
         );
         if (selected.length === 0) {
@@ -204,12 +240,16 @@ export function startSlack(opts: SlackOptions): void {
           return;
         }
         for (const persona of selected) {
-          const reply = await personaSay(
+          const reply = await personaSayOnce(
             persona,
-            `<@${user}> said: ${text}`,
-            { timeoutMs: opts.timeoutMs }
+            `${author}: ${text}`,
+            context,
+            { timeoutMs: opts.timeoutMs, model: opts.model }
           );
-          lastSpeaker.set(channel, persona.name);
+          appendMessage(channel, {
+            author: 'persona', name: persona.name,
+            display: `${persona.emoji} ${persona.name}`, text: reply,
+          });
           await app.client.chat.postMessage({
             channel,
             text: reply,

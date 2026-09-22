@@ -43,6 +43,11 @@ export const PAGE_HTML = `<!doctype html>
 <main>
   <aside id="personas"><div style="color:#8b949e;padding:8px">personas…</div></aside>
   <section class="center">
+    <div id="chanRow" style="padding:8px 16px;border-bottom:1px solid #21262d;display:flex;gap:8px;align-items:center">
+      <span style="color:#8b949e;font-size:12px">room:</span>
+      <select id="chan" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:inherit;padding:4px 8px"></select>
+      <span id="syncNote" style="color:#8b949e;font-size:11px"></span>
+    </div>
     <div id="chat"></div>
     <div id="composer">
       <input id="msg" placeholder="ペルソナを選んで話しかける / Enter で送信" autocomplete="off">
@@ -62,6 +67,39 @@ var AMBIENT = '__ambient__';
 var selected = AMBIENT;
 var tasksData = null;
 var evtSource = null;
+var chatStream = null;
+var currentChannel = 'web';
+
+// The chat room streams the shared channel log (~/.devin-squad/channels/) —
+// Slack-side messages appear here live too.
+function openChannel(ch) {
+  currentChannel = ch;
+  document.getElementById('chat').innerHTML = '';
+  if (chatStream) chatStream.close();
+  chatStream = new EventSource('/api/stream?channel=' + encodeURIComponent(ch));
+  chatStream.onmessage = function(e){
+    var m = JSON.parse(e.data);
+    addMsg(m.author === 'user' ? 'me' : 'persona', m.display, m.text);
+  };
+}
+
+function loadChannels() {
+  fetch('/api/channels').then(function(r){return r.json()}).then(function(r){
+    var sel = document.getElementById('chan');
+    sel.innerHTML = '';
+    var chans = r.channels.indexOf('web') >= 0 ? r.channels : ['web'].concat(r.channels);
+    chans.forEach(function(c){
+      var o = el('option', null, c === 'web' ? 'web（このUI）' : '#' + c);
+      o.value = c;
+      sel.appendChild(o);
+    });
+    sel.value = currentChannel;
+  });
+}
+document.getElementById('chan').onchange = function(e){ openChannel(e.target.value); };
+openChannel(currentChannel);
+loadChannels();
+setInterval(loadChannels, 15000);
 
 function el(tag, cls, text) {
   var e = document.createElement(tag);
@@ -85,6 +123,7 @@ function renderPersonas(personas) {
     selected = AMBIENT;
     document.querySelectorAll('.persona').forEach(function(x){x.classList.remove('active')});
     amb.classList.add('active');
+    openChannel(currentChannel);
     addMsg('persona', '🌐 ambient', '（全員に聞こえています。関係するペルソナが応答します）');
   };
   box.appendChild(amb);
@@ -96,6 +135,8 @@ function renderPersonas(personas) {
       selected = p.name;
       document.querySelectorAll('.persona').forEach(function(x){x.classList.remove('active')});
       d.classList.add('active');
+      if (chatStream) { chatStream.close(); chatStream = null; }
+      document.getElementById('chat').innerHTML = '';
       addMsg('persona', p.emoji + ' ' + p.name, '（このペルソナと会話します）');
     };
     box.appendChild(d);
@@ -115,21 +156,21 @@ function send() {
   var text = input.value.trim();
   if (!text || !selected) return;
   input.value = '';
-  addMsg('me', null, text);
   var thinking = el('div', 'msg persona', '…');
-  document.getElementById('chat').appendChild(thinking);
   if (selected === AMBIENT) {
-    fetch('/api/ambient', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text})})
+    // Message and persona replies arrive via the channel stream — no local echo.
+    document.getElementById('chat').appendChild(thinking);
+    fetch('/api/ambient', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({channel:currentChannel,message:text})})
       .then(function(r){return r.json()})
       .then(function(r){
         thinking.remove();
-        if (r.error) { addMsg('persona', '⚠️', r.error); return; }
-        if (!r.replies || r.replies.length === 0) { addMsg('persona', '🌐', '（誰も反応しませんでした）'); return; }
-        r.replies.forEach(function(x){ addMsg('persona', x.emoji + ' ' + x.name, x.reply); });
+        if (r.error) addMsg('persona', '⚠️', r.error);
       })
       .catch(function(e){ thinking.textContent = 'error: ' + e; });
     return;
   }
+  addMsg('me', null, text);
+  document.getElementById('chat').appendChild(thinking);
   fetch('/api/chat', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona:selected,message:text})})
     .then(function(r){return r.json()})
     .then(function(r){ thinking.textContent = r.reply || r.error; thinking.scrollIntoView(); })

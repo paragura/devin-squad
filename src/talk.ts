@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { runDevin, DevinRunResult } from './devin.js';
+import { runDevin, DevinRunResult, cleanSessions } from './devin.js';
 import type { Persona } from './persona.js';
 
 const execFileAsync = promisify(execFile);
@@ -67,6 +67,34 @@ export async function personaSay(
   if (firstTurn) {
     const id = await latestSessionId(dir);
     if (id) fs.writeFileSync(path.join(dir, '.session-id'), id);
+  }
+  return r.stdout.trim();
+}
+
+/**
+ * Disposable persona call: persona prompt + recent channel context inline,
+ * no session resume. The channel log is the memory — sessions get cleaned
+ * up so they don't pile up in Devin Desktop.
+ */
+export async function personaSayOnce(
+  persona: Persona,
+  message: string,
+  context: string[],
+  opts: { timeoutMs: number; model?: string }
+): Promise<string> {
+  const dir = path.join(os.homedir(), '.devin-squad', 'ambient', persona.name);
+  fs.mkdirSync(dir, { recursive: true });
+  const ctx = context.length ? `\n\n会話の流れ（直近）:\n${context.join('\n')}` : '';
+  const r = await runDevinRetry({
+    cwd: dir,
+    prompt: `${persona.prompt}${ctx}\n\n---\n\n${message}`,
+    permissionMode: persona.permissionMode ?? 'accept-edits',
+    timeoutMs: opts.timeoutMs,
+    model: persona.model ?? opts.model,
+  });
+  cleanSessions(dir);
+  if (r.exitCode !== 0) {
+    throw new Error(`devin exited ${r.exitCode}: ${(r.stderr || r.stdout).slice(0, 400)}`);
   }
   return r.stdout.trim();
 }

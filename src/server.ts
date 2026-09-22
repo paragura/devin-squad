@@ -2,8 +2,9 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { PAGE_HTML } from './webui.js';
 import { listPersonas, getPersona } from './persona.js';
-import { personaSay } from './talk.js';
+import { personaSay, personaSayOnce } from './talk.js';
 import { pickResponders } from './router.js';
+import { appendMessage, readMessages, contextLines, listChannels, channelFilePath } from './store.js';
 import { planTasks } from './planner.js';
 import { runSquad } from './scheduler.js';
 import { newRunDir } from './paths.js';
@@ -43,8 +44,6 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 export function serve(opts: ServeOptions): http.Server {
   const runs = new Map<string, RunState>();
   const personaMap = new Map(listPersonas(opts.repo).map(p => [p.name, p]));
-  /** Ambient chat room: last persona that responded (router continuity hint). */
-  let lastSpeaker: string | undefined;
 
   const json = (res: http.ServerResponse, body: unknown, code = 200) => {
     res.writeHead(code, { 'content-type': 'application/json' });
@@ -77,28 +76,82 @@ export function serve(opts: ServeOptions): http.Server {
       }
 
       // Ambient chat: router picks 0-2 personas who "want" to respond.
+      // Everything is stored in the channel log — personas are disposable.
       if (req.method === 'POST' && url.pathname === '/api/ambient') {
         const body = JSON.parse(await readBody(req));
+        const channel = String(body.channel ?? 'web');
         const message = String(body.message ?? '');
         if (!message.trim()) return json(res, { replies: [] });
         try {
+          appendMessage(channel, { author: 'user', name: 'you', display: 'you', text: message });
+          const context = contextLines(channel);
           const selected = await pickResponders(
             [...personaMap.values()],
             'you',
             message,
-            lastSpeaker,
+            context,
             { model: opts.model, timeoutMs: opts.timeoutMs }
           );
           const replies = [];
           for (const p of selected) {
-            const reply = await personaSay(p, message, { timeoutMs: opts.timeoutMs });
-            lastSpeaker = p.name;
+            const reply = await personaSayOnce(p, `you: ${message}`, context, {
+              timeoutMs: opts.timeoutMs,
+              model: opts.model,
+            });
+            appendMessage(channel, {
+              author: 'persona', name: p.name,
+              display: `${p.emoji} ${p.name}`, text: reply,
+            });
             replies.push({ name: p.name, emoji: p.emoji, reply });
           }
           json(res, { replies });
         } catch (err) {
           json(res, { error: String(err instanceof Error ? err.message : err) }, 500);
         }
+        return;
+      }
+
+      // Channel log APIs — shared with the Slack bot via ~/.devin-squad/channels/.
+      if (req.method === 'GET' && url.pathname === '/api/channels') {
+        json(res, { channels: listChannels() });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/messages') {
+        const channel = String(url.searchParams.get('channel') ?? 'web');
+        json(res, { messages: readMessages(channel, 100) });
+        return;
+      }
+
+      // SSE tail of the channel JSONL — the slack bot process appends to the
+      // same files, so this streams Slack-side activity live into the web UI.
+      if (req.method === 'GET' && url.pathname === '/api/stream') {
+        const channel = String(url.searchParams.get('channel') ?? 'web');
+        res.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        });
+        res.write('\n');
+        const file = channelFilePath(channel);
+        let offset = 0;
+        for (const m of readMessages(channel, 100)) res.write(`data: ${JSON.stringify(m)}\n\n`);
+        try { offset = fs.statSync(file).size; } catch { /* new channel */ }
+        const timer = setInterval(() => {
+          try {
+            const size = fs.statSync(file).size;
+            if (size <= offset) return;
+            const fd = fs.openSync(file, 'r');
+            const buf = Buffer.alloc(size - offset);
+            fs.readSync(fd, buf, 0, buf.length, offset);
+            fs.closeSync(fd);
+            offset = size;
+            for (const line of buf.toString('utf8').split('\n').filter(Boolean)) {
+              res.write(`data: ${line}\n\n`);
+            }
+          } catch { /* file may not exist yet */ }
+        }, 1500);
+        req.on('close', () => clearInterval(timer));
         return;
       }
 

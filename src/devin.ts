@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -74,5 +74,29 @@ export function runDevin(opts: DevinRunOptions): Promise<DevinRunResult> {
         timedOut,
       });
     });
+  });
+}
+
+/**
+ * Delete devin sessions recorded in `dir` older than `olderThanSec`, so
+ * disposable calls (router, ambient personas) don't pile up in Devin
+ * Desktop's session list. Fire-and-forget, best-effort.
+ */
+export function cleanSessions(dir: string, olderThanSec = 60): void {
+  execFile('devin', ['list', '--format', 'json'], { cwd: dir }, (e, out) => {
+    if (e) return;
+    try {
+      const parsed = JSON.parse(out) as unknown;
+      const list = (Array.isArray(parsed) ? parsed : (parsed as { sessions?: unknown[] }).sessions ?? []) as {
+        id?: string;
+        last_activity_at?: number;
+      }[];
+      const cutoff = Date.now() / 1000 - olderThanSec;
+      for (const s of list) {
+        if (s.id && (s.last_activity_at ?? 0) < cutoff) {
+          execFile('devin', ['rm', s.id, '--force'], { cwd: dir }, () => {});
+        }
+      }
+    } catch { /* cleanup is best-effort */ }
   });
 }
