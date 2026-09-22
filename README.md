@@ -65,6 +65,16 @@ devin-squad talk strict-reviewer "main.py をレビューして"  --repo .
 
 Examples live in [`examples/personas/`](examples/personas/).
 
+## Web UI
+
+```bash
+devin-squad serve --port 3333 --repo .
+```
+
+Opens a local chat-room UI: pick a persona on the left to talk to it, or use
+the right panel to turn a goal into a planned task list and launch a squad run
+with live per-task status.
+
 `tasks.json`:
 
 ```json
