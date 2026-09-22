@@ -2,11 +2,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import { assertGitRepo, mergeBranch, currentBranch } from './git.js';
 import { newRunDir, latestRunDir } from './paths.js';
 import { runSquad } from './scheduler.js';
 import { planTasks } from './planner.js';
 import { loadTasksFile, writeReport } from './report.js';
+import { listPersonas, getPersona, scaffoldPersona } from './persona.js';
+import { personaSay, talkRepl } from './talk.js';
 import type { SquadOptions, TaskResult } from './types.js';
 
 const USAGE = `devin-squad — run a team of parallel Devin CLI workers in git worktrees
@@ -15,6 +18,9 @@ Usage:
   devin-squad run   --tasks tasks.json [options]   Execute a task list in parallel
   devin-squad plan  --goal "..."       [options]   Have a planner Devin write tasks.json
   devin-squad merge [--run <dir|latest>]           Merge successful squad/* branches
+  devin-squad personas                             List personas (project + global)
+  devin-squad persona new <name> [--global]        Scaffold a persona file
+  devin-squad talk <persona> [message]             Chat with a persona (REPL if no message)
 
 Options:
   --repo <path>          Target git repo (default: cwd)
@@ -24,11 +30,15 @@ Options:
   --timeout <minutes>    Per-worker timeout (default: 30)
   --model <name>         Model for workers (e.g. opus)
   --keep-worktrees       Keep worktrees even when a task made no changes
+  --persona <name>       Run all tasks as this persona (task-level "persona" wins)
   --out <file>           (plan) Output file (default: tasks.json)
   --dry-run              Print resolved plan without spawning devin
   --                     Extra args after -- are passed to each devin call
 
-tasks.json shape: {"goal":"…","tasks":[{"id":"a","title":"…","prompt":"…","dependsOn":[]}]}
+tasks.json shape: {"goal":"…","tasks":[{"id":"a","title":"…","prompt":"…","dependsOn":[],"persona":"optional"}]}
+
+Personas are markdown files with frontmatter in ~/.devin-squad/personas/ (global)
+or <repo>/.devin-squad/personas/ (project wins on name clash).
 `;
 
 function parseArgs(argv: string[]): { cmd: string; flags: Record<string, string | boolean> } {
@@ -80,6 +90,13 @@ async function cmdRun(flags: Record<string, string | boolean>): Promise<void> {
   const tasksFile = String(flags.tasks ?? '');
   if (!tasksFile) throw new Error('run requires --tasks <file>');
   const { goal, tasks } = loadTasksFile(path.resolve(tasksFile));
+
+  opts.personas = new Map(listPersonas(opts.repo).map(p => [p.name, p]));
+  if (flags.persona) {
+    const name = String(flags.persona);
+    if (!opts.personas.has(name)) throw new Error(`persona not found: ${name}`);
+    opts.defaultPersona = name;
+  }
 
   console.log(`devin-squad: ${tasks.length} task(s), concurrency ${opts.concurrency}, mode ${opts.permissionMode}`);
   console.log(`repo: ${opts.repo} (branch ${currentBranch(opts.repo)})`);
@@ -159,6 +176,43 @@ async function cmdMerge(flags: Record<string, string | boolean>): Promise<void> 
   if (failed > 0) process.exitCode = 1;
 }
 
+function cmdPersonas(flags: Record<string, string | boolean>): void {
+  const repo = path.resolve(String(flags.repo ?? process.cwd()));
+  const personas = listPersonas(repo);
+  if (personas.length === 0) {
+    console.log('no personas yet — create one: devin-squad persona new <name>');
+    return;
+  }
+  for (const p of personas) {
+    console.log(`${p.emoji} ${p.name} (${p.source}) — ${p.description}`);
+    console.log(`   ${p.file}`);
+  }
+}
+
+function cmdPersonaNew(name: string | undefined, flags: Record<string, string | boolean>): void {
+  if (!name) throw new Error('usage: devin-squad persona new <name> [--global|--project]');
+  const dir =
+    flags.global === true
+      ? path.join(os.homedir(), '.devin-squad', 'personas')
+      : path.join(path.resolve(String(flags.repo ?? process.cwd())), '.devin-squad', 'personas');
+  const file = scaffoldPersona(name, dir);
+  console.log(`created ${file} — edit the prompt, then use --persona ${name} or "persona":"${name}" in tasks.json`);
+}
+
+async function cmdTalk(name: string | undefined, message: string | undefined, flags: Record<string, string | boolean>): Promise<void> {
+  if (!name) throw new Error('usage: devin-squad talk <persona> [message]');
+  const repo = path.resolve(String(flags.repo ?? process.cwd()));
+  const persona = getPersona(name, repo);
+  if (!persona) throw new Error(`persona not found: ${name} (see: devin-squad personas)`);
+  const timeoutMs = Number(flags.timeout ?? 10) * 60_000;
+  if (message) {
+    const reply = await personaSay(persona, message, { timeoutMs });
+    console.log(`${persona.emoji} ${persona.name}> ${reply}`);
+  } else {
+    await talkRepl(persona, { timeoutMs });
+  }
+}
+
 const { cmd, flags } = parseArgs(process.argv.slice(2));
 if (cmd === 'help' || flags.help) {
   console.log(USAGE);
@@ -169,6 +223,16 @@ try {
   if (cmd === 'run') await cmdRun(flags);
   else if (cmd === 'plan') await cmdPlan(flags);
   else if (cmd === 'merge') await cmdMerge(flags);
+  else if (cmd === 'personas') cmdPersonas(flags);
+  else if (cmd === 'persona') {
+    const rest = process.argv.slice(3).filter(a => !a.startsWith('--'));
+    if (rest[0] === 'new') cmdPersonaNew(rest[1], flags);
+    else throw new Error('usage: devin-squad persona new <name>');
+  }
+  else if (cmd === 'talk') {
+    const rest = process.argv.slice(3).filter(a => !a.startsWith('--'));
+    await cmdTalk(rest[0], rest.slice(1).join(' ') || undefined, flags);
+  }
   else {
     console.error(`unknown command: ${cmd}\n\n${USAGE}`);
     process.exit(1);

@@ -2,10 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { runDevin } from './devin.js';
 import { createWorktree, diffFromBase, commitAll, removeWorktree, hasChanges } from './git.js';
+import type { Persona } from './persona.js';
 import type { SquadOptions, SquadTask, TaskResult } from './types.js';
 
-function buildWorkerPrompt(task: SquadTask, repoName: string): string {
+function buildWorkerPrompt(task: SquadTask, repoName: string, persona?: Persona): string {
+  const personaBlock = persona
+    ? [`# Persona`, ``, persona.prompt, ``, `Stay in character (${persona.emoji} ${persona.name}) for your final summary, but prioritize correctness over style.`, ``].join('\n')
+    : '';
   return [
+    personaBlock,
     `You are a worker on a Devin Squad team executing one task inside the "${repoName}" repository.`,
     `Your working directory is an isolated git worktree on branch "squad/${task.id}".`,
     ``,
@@ -31,16 +36,21 @@ export async function runTask(
   fs.mkdirSync(taskDir, { recursive: true });
 
   const wt = createWorktree(opts.repo, task.id);
-  const prompt = buildWorkerPrompt(task, path.basename(opts.repo));
+  const personaName = task.persona ?? opts.defaultPersona;
+  const persona = personaName ? opts.personas?.get(personaName) : undefined;
+  if (personaName && !persona) {
+    console.log(`  ! ${task.id}: persona "${personaName}" not found, running without it`);
+  }
+  const prompt = buildWorkerPrompt(task, path.basename(opts.repo), persona);
 
   let result: TaskResult;
   try {
     const r = await runDevin({
       cwd: wt.path,
       prompt,
-      permissionMode: opts.permissionMode,
+      permissionMode: persona?.permissionMode ?? opts.permissionMode,
       timeoutMs: opts.timeoutMs,
-      model: opts.model,
+      model: persona?.model ?? opts.model,
       exportPath: path.join(taskDir, 'session.atif.json'),
       logPath: path.join(taskDir, 'log.txt'),
       extraArgs: opts.extraArgs,

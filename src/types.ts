@@ -3,6 +3,8 @@ export interface SquadTask {
   title: string;
   prompt: string;
   dependsOn?: string[];
+  /** Persona name to run this task as (see personas/ dirs). */
+  persona?: string;
 }
 
 export interface TasksFile {
@@ -23,6 +25,8 @@ export interface TaskResult {
   error?: string;
 }
 
+import type { Persona } from './persona.js';
+
 export interface SquadOptions {
   repo: string;
   concurrency: number;
@@ -31,4 +35,8 @@ export interface SquadOptions {
   model?: string;
   keepWorktrees: boolean;
   extraArgs: string[];
+  /** Loaded personas keyed by name (global + project dirs). */
+  personas?: Map<string, Persona>;
+  /** Default persona for tasks without one. */
+  defaultPersona?: string;
 }

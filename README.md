@@ -35,6 +35,36 @@ devin-squad run --tasks tasks.json --concurrency 3
 devin-squad merge --run latest
 ```
 
+## Personas
+
+Drop markdown files into `~/.devin-squad/personas/` (global) or
+`<repo>/.devin-squad/personas/` (project) to add team members:
+
+```markdown
+---
+name: strict-reviewer
+emoji: 🛡️
+description: 厳しい関西弁レビュアー
+# model: opus
+# permissionMode: bypass
+---
+
+あなたは厳しいコードレビュアーです。関西弁で話します。…
+```
+
+Then use them per task (`"persona": "strict-reviewer"` in tasks.json) or for the
+whole run (`--persona strict-reviewer`). You can also just chat with one —
+the persona keeps memory across turns via Devin session resume:
+
+```bash
+devin-squad personas                    # list
+devin-squad persona new my-role         # scaffold
+devin-squad talk strict-reviewer        # REPL chat
+devin-squad talk strict-reviewer "main.py をレビューして"  --repo .
+```
+
+Examples live in [`examples/personas/`](examples/personas/).
+
 `tasks.json`:
 
 ```json
