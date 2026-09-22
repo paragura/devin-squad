@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SquadTask, TaskResult } from './types.js';
+import { validateTasks } from './validation.js';
 
 function fmtDur(ms: number): string {
   const s = Math.round(ms / 1000);
@@ -8,7 +9,7 @@ function fmtDur(ms: number): string {
 }
 
 export function writeReport(runDir: string, results: TaskResult[], goal?: string): string {
-  const ok = results.filter(r => r.status === 'success');
+  const ok = results.filter((r) => r.status === 'success');
   const lines: string[] = [
     `# Devin Squad Run`,
     ``,
@@ -18,7 +19,7 @@ export function writeReport(runDir: string, results: TaskResult[], goal?: string
     ``,
     `| Task | Status | Duration | Changes | Branch |`,
     `| --- | --- | --- | --- | --- |`,
-    ...results.map(r => {
+    ...results.map((r) => {
       const icon = r.status === 'success' ? '✅' : r.status === 'skipped' ? '➖' : '❌';
       return `| ${r.task.id} | ${icon} ${r.status} | ${fmtDur(r.durationMs)} | ${r.changed ? 'yes' : 'no'} | ${r.branch ?? '-'} |`;
     }),
@@ -34,17 +35,12 @@ export function writeReport(runDir: string, results: TaskResult[], goal?: string
     }
   }
   const reportPath = path.join(runDir, 'report.md');
-  fs.writeFileSync(reportPath, lines.filter(l => l !== '').join('\n'));
+  fs.writeFileSync(reportPath, lines.join('\n') + '\n');
   return reportPath;
 }
 
 export function loadTasksFile(file: string): { goal?: string; tasks: SquadTask[] } {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const tasks: SquadTask[] = Array.isArray(raw) ? raw : raw.tasks;
-  if (!Array.isArray(tasks) || tasks.length === 0) throw new Error('no tasks in file');
-  for (const t of tasks) {
-    if (!t.id || !t.prompt) throw new Error(`task missing id/prompt: ${JSON.stringify(t)}`);
-    t.dependsOn ??= [];
-  }
+  const tasks = validateTasks(Array.isArray(raw) ? raw : raw?.tasks);
   return { goal: Array.isArray(raw) ? undefined : raw.goal, tasks };
 }

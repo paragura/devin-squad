@@ -2,9 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import os from 'node:os';
 import { assertGitRepo, mergeBranch, currentBranch } from './git.js';
-import { newRunDir, latestRunDir } from './paths.js';
+import { newRunDir, latestRunDir, SQUAD_HOME } from './paths.js';
 import { runSquad } from './scheduler.js';
 import { planTasks } from './planner.js';
 import { loadTasksFile, writeReport } from './report.js';
@@ -13,6 +12,8 @@ import { personaSay, talkRepl } from './talk.js';
 import { serve } from './server.js';
 import { startSlack } from './slack.js';
 import type { SquadOptions, TaskResult } from './types.js';
+import { parseArgs } from './args.js';
+import { dependencyOrder, positiveNumber } from './validation.js';
 
 const USAGE = `devin-squad — run a team of parallel Devin CLI workers in git worktrees
 
@@ -46,38 +47,18 @@ Personas are markdown files with frontmatter in ~/.devin-squad/personas/ (global
 or <repo>/.devin-squad/personas/ (project wins on name clash).
 `;
 
-function parseArgs(argv: string[]): { cmd: string; flags: Record<string, string | boolean> } {
-  const [cmd = 'help', ...rest] = argv;
-  const flags: Record<string, string | boolean> = {};
-  const extraIdx = rest.indexOf('--');
-  const args = extraIdx >= 0 ? rest.slice(0, extraIdx) : rest;
-  if (extraIdx >= 0) flags._extra = rest.slice(extraIdx + 1).join(' ');
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (!a.startsWith('--')) continue;
-    const [k, v] = a.slice(2).split('=');
-    if (v !== undefined) flags[k] = v;
-    else if (args[i + 1] && !args[i + 1].startsWith('--')) flags[k] = args[++i];
-    else flags[k] = true;
-  }
-  return { cmd, flags };
-}
-
 function resolveOptions(flags: Record<string, string | boolean>): SquadOptions {
   const repo = path.resolve(String(flags.repo ?? process.cwd()));
   assertGitRepo(repo);
   const sandbox = flags.sandbox === true;
   return {
     repo,
-    concurrency: Number(flags.concurrency ?? 3),
+    concurrency: positiveNumber(flags.concurrency ?? 3, 'concurrency', true),
     permissionMode: sandbox ? 'autonomous' : String(flags.mode ?? 'bypass'),
-    timeoutMs: Number(flags.timeout ?? 30) * 60_000,
+    timeoutMs: positiveNumber(flags.timeout ?? 30, 'timeout') * 60_000,
     model: flags.model ? String(flags.model) : 'swe-2-medium',
     keepWorktrees: flags['keep-worktrees'] === true,
-    extraArgs: [
-      ...(sandbox ? ['--sandbox'] : []),
-      ...(flags._extra ? String(flags._extra).split(' ').filter(Boolean) : []),
-    ],
+    extraArgs: [...(sandbox ? ['--sandbox'] : []), ...extra],
   };
 }
 
@@ -96,18 +77,22 @@ async function cmdRun(flags: Record<string, string | boolean>): Promise<void> {
   if (!tasksFile) throw new Error('run requires --tasks <file>');
   const { goal, tasks } = loadTasksFile(path.resolve(tasksFile));
 
-  opts.personas = new Map(listPersonas(opts.repo).map(p => [p.name, p]));
+  opts.personas = new Map(listPersonas(opts.repo).map((p) => [p.name, p]));
   if (flags.persona) {
     const name = String(flags.persona);
     if (!opts.personas.has(name)) throw new Error(`persona not found: ${name}`);
     opts.defaultPersona = name;
   }
 
-  console.log(`devin-squad: ${tasks.length} task(s), concurrency ${opts.concurrency}, mode ${opts.permissionMode}`);
+  console.log(
+    `devin-squad: ${tasks.length} task(s), concurrency ${opts.concurrency}, mode ${opts.permissionMode}`,
+  );
   console.log(`repo: ${opts.repo} (branch ${currentBranch(opts.repo)})`);
   if (flags['dry-run']) {
     for (const t of tasks) {
-      console.log(`  - ${t.id}: ${t.title}${t.dependsOn?.length ? ` (after ${t.dependsOn.join(', ')})` : ''}`);
+      console.log(
+        `  - ${t.id}: ${t.title}${t.dependsOn?.length ? ` (after ${t.dependsOn.join(', ')})` : ''}`,
+      );
     }
     return;
   }
@@ -120,9 +105,9 @@ async function cmdRun(flags: Record<string, string | boolean>): Promise<void> {
   const report = writeReport(runDir, results, goal);
   const ok = results.filter((r: TaskResult) => r.status === 'success').length;
   console.log(`\n${ok}/${results.length} succeeded — report: ${report}`);
-  const changed = results.filter(r => r.changed);
+  const changed = results.filter((r) => r.changed);
   if (changed.length > 0) {
-    console.log(`branches kept: ${changed.map(r => r.branch).join(', ')}`);
+    console.log(`branches kept: ${changed.map((r) => r.branch).join(', ')}`);
     console.log(`review & integrate: devin-squad merge --run ${runDir}`);
   }
   if (ok < results.length) process.exitCode = 1;
@@ -130,7 +115,11 @@ async function cmdRun(flags: Record<string, string | boolean>): Promise<void> {
 
 async function cmdPlan(flags: Record<string, string | boolean>): Promise<void> {
   const opts = resolveOptions(flags);
-  const goal = flags.goal ? String(flags.goal) : flags.file ? fs.readFileSync(String(flags.file), 'utf8') : '';
+  const goal = flags.goal
+    ? String(flags.goal)
+    : flags.file
+      ? fs.readFileSync(String(flags.file), 'utf8')
+      : '';
   if (!goal.trim()) throw new Error('plan requires --goal "..." or --file <file>');
   console.log('planning… (a devin worker is decomposing the goal)');
   const tasks = await planTasks(goal, {
@@ -148,29 +137,32 @@ async function cmdPlan(flags: Record<string, string | boolean>): Promise<void> {
 async function cmdMerge(flags: Record<string, string | boolean>): Promise<void> {
   const opts = resolveOptions(flags);
   const runDir =
-    flags.run && flags.run !== 'latest'
-      ? path.resolve(String(flags.run))
-      : latestRunDir(opts.repo);
+    flags.run && flags.run !== 'latest' ? path.resolve(String(flags.run)) : latestRunDir(opts.repo);
   if (!runDir) throw new Error('no runs found');
   const metas = fs
     .readdirSync(runDir, { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .map(d => {
+    .filter((d) => d.isDirectory())
+    .map((d) => {
       try {
-        return JSON.parse(fs.readFileSync(path.join(runDir!, d.name, 'meta.json'), 'utf8')) as TaskResult;
+        return JSON.parse(
+          fs.readFileSync(path.join(runDir!, d.name, 'meta.json'), 'utf8'),
+        ) as TaskResult;
       } catch {
         return null;
       }
     })
-    .filter((m): m is TaskResult => m !== null && m.status === 'success' && !!m.branch);
+    .filter(
+      (m): m is TaskResult =>
+        m !== null && m.status === 'success' && m.changed && !!(m.headSha ?? m.branch),
+    );
   if (metas.length === 0) {
     console.log('no successful branches to merge');
     return;
   }
   console.log(`merging ${metas.length} branch(es) into ${currentBranch(opts.repo)}:`);
   let failed = 0;
-  for (const m of metas) {
-    const r = mergeBranch(opts.repo, m.branch!);
+  for (const m of dependencyOrder(metas)) {
+    const r = mergeBranch(opts.repo, m.headSha ?? m.branch!);
     console.log(`  ${r.ok ? '✓' : '✗'} ${m.branch}${r.ok ? '' : ` — CONFLICT/error`}`);
     if (!r.ok) {
       failed++;
@@ -198,27 +190,33 @@ function cmdPersonaNew(name: string | undefined, flags: Record<string, string | 
   if (!name) throw new Error('usage: devin-squad persona new <name> [--global|--project]');
   const dir =
     flags.global === true
-      ? path.join(os.homedir(), '.devin-squad', 'personas')
+      ? path.join(SQUAD_HOME, 'personas')
       : path.join(path.resolve(String(flags.repo ?? process.cwd())), '.devin-squad', 'personas');
   const file = scaffoldPersona(name, dir);
-  console.log(`created ${file} — edit the prompt, then use --persona ${name} or "persona":"${name}" in tasks.json`);
+  console.log(
+    `created ${file} — edit the prompt, then use --persona ${name} or "persona":"${name}" in tasks.json`,
+  );
 }
 
-async function cmdTalk(name: string | undefined, message: string | undefined, flags: Record<string, string | boolean>): Promise<void> {
+async function cmdTalk(
+  name: string | undefined,
+  message: string | undefined,
+  flags: Record<string, string | boolean>,
+): Promise<void> {
   if (!name) throw new Error('usage: devin-squad talk <persona> [message]');
   const repo = path.resolve(String(flags.repo ?? process.cwd()));
   const persona = getPersona(name, repo);
   if (!persona) throw new Error(`persona not found: ${name} (see: devin-squad personas)`);
-  const timeoutMs = Number(flags.timeout ?? 10) * 60_000;
+  const timeoutMs = positiveNumber(flags.timeout ?? 10, 'timeout') * 60_000;
   if (message) {
-    const reply = await personaSay(persona, message, { timeoutMs });
+    const reply = await personaSay(persona, message, { timeoutMs, repo });
     console.log(`${persona.emoji} ${persona.name}> ${reply}`);
   } else {
-    await talkRepl(persona, { timeoutMs });
+    await talkRepl(persona, { timeoutMs, repo });
   }
 }
 
-const { cmd, flags } = parseArgs(process.argv.slice(2));
+const { cmd, flags, positionals, extra } = parseArgs(process.argv.slice(2));
 if (cmd === 'help' || flags.help) {
   console.log(USAGE);
   process.exit(0);
@@ -226,25 +224,26 @@ if (cmd === 'help' || flags.help) {
 // Load ./.env if present (Slack tokens etc.) — no dependency, Node ≥20.12.
 try {
   process.loadEnvFile?.(path.resolve('.env'));
-} catch { /* no .env — fine */ }
-checkDevin();
+} catch {
+  /* no .env — fine */
+}
 try {
+  if (['run', 'plan', 'talk', 'serve', 'slack'].includes(cmd) && !flags['dry-run']) checkDevin();
   if (cmd === 'run') await cmdRun(flags);
   else if (cmd === 'plan') await cmdPlan(flags);
   else if (cmd === 'merge') await cmdMerge(flags);
   else if (cmd === 'personas') cmdPersonas(flags);
   else if (cmd === 'persona') {
-    const rest = process.argv.slice(3).filter(a => !a.startsWith('--'));
+    const rest = positionals;
     if (rest[0] === 'new') cmdPersonaNew(rest[1], flags);
     else throw new Error('usage: devin-squad persona new <name>');
-  }
-  else if (cmd === 'talk') {
-    const rest = process.argv.slice(3).filter(a => !a.startsWith('--'));
+  } else if (cmd === 'talk') {
+    const rest = positionals;
     await cmdTalk(rest[0], rest.slice(1).join(' ') || undefined, flags);
-  }
-  else if (cmd === 'serve') {
+  } else if (cmd === 'serve') {
     const opts = resolveOptions(flags);
-    const port = Number(flags.port ?? 3333);
+    const port = positiveNumber(flags.port ?? 3333, 'port', true);
+    if (port > 65535) throw new Error('port must be at most 65535');
     serve({
       repo: opts.repo,
       port,
@@ -256,8 +255,7 @@ try {
     });
     // keep process alive
     await new Promise(() => {});
-  }
-  else if (cmd === 'slack') {
+  } else if (cmd === 'slack') {
     const opts = resolveOptions(flags);
     startSlack({
       repo: opts.repo,
@@ -270,8 +268,7 @@ try {
       extraArgs: opts.extraArgs,
     });
     await new Promise(() => {});
-  }
-  else {
+  } else {
     console.error(`unknown command: ${cmd}\n\n${USAGE}`);
     process.exit(1);
   }

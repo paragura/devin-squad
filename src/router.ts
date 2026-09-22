@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { Persona } from './persona.js';
-import { runDevin, cleanSessions } from './devin.js';
+import { runDevin } from './devin.js';
+import { SQUAD_HOME } from './paths.js';
 
 /**
  * Lightweight router: one devin -p call decides which 0-2 personas should
@@ -14,15 +14,13 @@ export async function pickResponders(
   author: string,
   text: string,
   context: string[],
-  opts: { model?: string; timeoutMs: number }
+  opts: { model?: string; timeoutMs: number },
 ): Promise<Persona[]> {
   if (personas.length === 0) return [];
-  const routerDir = path.join(os.homedir(), '.devin-squad', 'router');
+  const routerDir = path.join(SQUAD_HOME, 'router');
   fs.mkdirSync(routerDir, { recursive: true });
-  const roster = personas.map(p => `- ${p.name}: ${p.description}`).join('\n');
-  const history = context.length
-    ? `\nRecent conversation:\n${context.join('\n')}\n`
-    : '';
+  const roster = personas.map((p) => `- ${p.name}: ${p.description}`).join('\n');
+  const history = context.length ? `\nRecent conversation:\n${context.join('\n')}\n` : '';
   const prompt = `You are a router for a team chat tool. Decide which personas should respond to the LAST message below.
 
 Persona roster:
@@ -42,8 +40,8 @@ Message from ${author}: ${text.slice(0, 2000)}`;
     permissionMode: 'normal',
     timeoutMs: opts.timeoutMs,
     model: opts.model,
+    disposable: true,
   });
-  cleanSessions(routerDir);
   if (r.exitCode !== 0) {
     console.error('[router] devin failed:', r.stderr.slice(0, 200));
     return [];
@@ -60,9 +58,10 @@ Message from ${author}: ${text.slice(0, 2000)}`;
     return [];
   }
   if (!Array.isArray(names)) return [];
-  return names
-    .map(n => personas.find(p => p.name === n))
-    .filter((p): p is Persona => p !== undefined);
+  return [...new Set(names)]
+    .map((n) => personas.find((p) => p.name === n))
+    .filter((p): p is Persona => p !== undefined)
+    .slice(0, 2);
 }
 
 export interface ConversationVerdict {
@@ -78,9 +77,9 @@ export interface ConversationVerdict {
 export async function judgeConversation(
   goal: string,
   context: string[],
-  opts: { model?: string; timeoutMs: number }
+  opts: { model?: string; timeoutMs: number },
 ): Promise<ConversationVerdict> {
-  const judgeDir = path.join(os.homedir(), '.devin-squad', 'judge');
+  const judgeDir = path.join(SQUAD_HOME, 'judge');
   fs.mkdirSync(judgeDir, { recursive: true });
   const prompt = `You are the judge of a team chat conversation between AI personas and a human (the boss).
 
@@ -103,8 +102,8 @@ Reply with ONLY JSON, e.g. {"state":"done"} or {"state":"ask_human","question":"
     permissionMode: 'normal',
     timeoutMs: opts.timeoutMs,
     model: opts.model,
+    disposable: true,
   });
-  cleanSessions(judgeDir);
   if (r.exitCode !== 0) return { state: 'done' };
   const m = r.stdout.match(/\{[\s\S]*?\}/);
   if (!m) return { state: 'done' };

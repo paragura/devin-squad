@@ -23,6 +23,9 @@ export interface TaskResult {
   worktreePath?: string;
   changed: boolean;
   error?: string;
+  /** Immutable result and task-specific diff base, including inherited dependencies. */
+  headSha?: string;
+  baseSha?: string;
 }
 
 import type { Persona } from './persona.js';
@@ -45,7 +48,15 @@ export interface SquadOptions {
 
 export type SquadEvent =
   | { type: 'task-start'; taskId: string; title: string }
-  | { type: 'task-done'; taskId: string; status: TaskStatus; durationMs: number; changed: boolean; error?: string }
+  | {
+      type: 'task-done';
+      taskId: string;
+      status: TaskStatus;
+      durationMs: number;
+      changed: boolean;
+      error?: string;
+    }
   | { type: 'task-skip'; taskId: string; reason: string }
   | { type: 'heartbeat'; running: { id: string; elapsedMs: number }[] }
+  | { type: 'run-error'; error: string }
   | { type: 'run-done'; results: TaskResult[] };

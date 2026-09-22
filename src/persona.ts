@@ -1,6 +1,7 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { SQUAD_HOME } from './paths.js';
+import { identifier, inside } from './validation.js';
 
 export interface Persona {
   name: string;
@@ -44,7 +45,7 @@ function parsePersonaFile(file: string, source: Persona['source']): Persona | nu
 
 export function personasDirs(repo?: string): { dir: string; source: Persona['source'] }[] {
   const dirs: { dir: string; source: Persona['source'] }[] = [
-    { dir: path.join(os.homedir(), '.devin-squad', 'personas'), source: 'global' },
+    { dir: path.join(SQUAD_HOME, 'personas'), source: 'global' },
   ];
   if (repo) dirs.push({ dir: path.join(repo, '.devin-squad', 'personas'), source: 'project' });
   return dirs;
@@ -54,7 +55,7 @@ export function listPersonas(repo?: string): Persona[] {
   const byName = new Map<string, Persona>();
   for (const { dir, source } of personasDirs(repo)) {
     if (!fs.existsSync(dir)) continue;
-    for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.md'))) {
+    for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.md'))) {
       const p = parsePersonaFile(path.join(dir, f), source);
       if (p) byName.set(p.name, p);
     }
@@ -76,16 +77,17 @@ const SECRETARY_FALLBACK: Persona = {
 };
 
 export function findSecretary(personas: Persona[]): Persona {
-  return personas.find(p => /secretary|秘書|hisho/i.test(p.name)) ?? SECRETARY_FALLBACK;
+  return personas.find((p) => /secretary|秘書|hisho/i.test(p.name)) ?? SECRETARY_FALLBACK;
 }
 
 export function getPersona(name: string, repo?: string): Persona | null {
-  return listPersonas(repo).find(p => p.name === name) ?? null;
+  return listPersonas(repo).find((p) => p.name === name) ?? null;
 }
 
 export function scaffoldPersona(name: string, dir: string): string {
+  identifier(name, 'persona name');
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${name}.md`);
+  const file = inside(dir, `${name}.md`);
   if (fs.existsSync(file)) throw new Error(`persona already exists: ${file}`);
   fs.writeFileSync(
     file,
@@ -101,7 +103,7 @@ description: 説明をここに（ルーターが発言者を選ぶときの判�
 
 あなたは「${name}」というペルソナの Devin ワーカーです。
 ここに役割・口調・得意領域・振る舞いのルールを書いてください。
-`
+`,
   );
   return file;
 }

@@ -1,7 +1,10 @@
 import { runDevin } from './devin.js';
 import type { SquadTask } from './types.js';
+import { validateTasks } from './validation.js';
 
-const PLANNER_PROMPT = (goal: string) => `You are the planner for a Devin Squad — a team of parallel Devin CLI workers.
+const PLANNER_PROMPT = (
+  goal: string,
+) => `You are the planner for a Devin Squad — a team of parallel Devin CLI workers.
 
 Decompose the following goal into independent tasks that can run in parallel in separate git worktrees of this repository.
 
@@ -18,7 +21,7 @@ Output ONLY a JSON array — no prose, no code fences — with this shape:
 
 export async function planTasks(
   goal: string,
-  opts: { cwd: string; model?: string; timeoutMs: number }
+  opts: { cwd: string; model?: string; timeoutMs: number },
 ): Promise<SquadTask[]> {
   const r = await runDevin({
     cwd: opts.cwd,
@@ -28,7 +31,8 @@ export async function planTasks(
     model: opts.model,
   });
 
-  if (r.exitCode !== 0) {
+  if (r.truncated) throw new Error('planner output exceeded 2 MiB');
+  if (r.timedOut || r.exitCode !== 0) {
     throw new Error(`planner devin exited ${r.exitCode}: ${r.stderr.slice(0, 500)}`);
   }
 
@@ -36,9 +40,5 @@ export async function planTasks(
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidate = fence ? fence[1] : text.slice(text.indexOf('['), text.lastIndexOf(']') + 1);
   const parsed = JSON.parse(candidate) as SquadTask[];
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('planner returned no tasks');
-  for (const t of parsed) {
-    if (!t.id || !t.prompt) throw new Error(`planner produced malformed task: ${JSON.stringify(t)}`);
-  }
-  return parsed;
+  return validateTasks(parsed);
 }

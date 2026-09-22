@@ -1,4 +1,21 @@
 node_modules/
 dist/
 tasks.json
+
+# Local credentials. Only the explicit, placeholder-only template is shareable.
 .env
+.env.*
+!.env.example
+
+# Runtime data can contain conversations, prompts, source code and session data.
+# Project personas remain shareable; review their content before committing.
+**/.devin-squad/*
+!**/.devin-squad/personas/
+*.log
+session.atif.json
+sessions.db
+sessions.db-*
+
+# Local development artifacts.
+.DS_Store
+__pycache__/

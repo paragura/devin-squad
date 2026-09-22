@@ -3,10 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const SQUAD_HOME = path.join(os.homedir(), '.devin-squad');
+export const SQUAD_HOME = process.env.DEVIN_SQUAD_HOME ?? path.join(os.homedir(), '.devin-squad');
 
 export function repoFingerprint(repo: string): string {
-  return crypto.createHash('sha1').update(repo).digest('hex').slice(0, 12);
+  return crypto.createHash('sha1').update(fs.realpathSync(repo)).digest('hex').slice(0, 12);
 }
 
 export function worktreesRoot(repo: string): string {
@@ -19,7 +19,7 @@ export function runsRoot(repo: string): string {
 
 export function newRunDir(repo: string): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const dir = path.join(runsRoot(repo), ts);
+  const dir = path.join(runsRoot(repo), `${ts}-${crypto.randomUUID().slice(0, 8)}`);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -29,7 +29,7 @@ export function latestRunDir(repo: string): string | null {
   if (!fs.existsSync(root)) return null;
   const dirs = fs
     .readdirSync(root)
-    .filter(d => fs.statSync(path.join(root, d)).isDirectory())
+    .filter((d) => fs.statSync(path.join(root, d)).isDirectory())
     .sort();
   return dirs.length > 0 ? path.join(root, dirs[dirs.length - 1]) : null;
 }
