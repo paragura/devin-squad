@@ -93,16 +93,30 @@ export function serve(opts: ServeOptions): http.Server {
             { model: opts.model, timeoutMs: opts.timeoutMs }
           );
           const replies = [];
-          for (const p of selected) {
-            const reply = await personaSayOnce(p, `you: ${message}`, context, {
-              timeoutMs: opts.timeoutMs,
-              model: opts.model,
-            });
-            appendMessage(channel, {
-              author: 'persona', name: p.name,
-              display: `${p.emoji} ${p.name}`, text: reply,
-            });
-            replies.push({ name: p.name, emoji: p.emoji, reply });
+          // Personas keep talking to each other: after each round the router
+          // decides if anyone else wants in. Max 3 rounds, no self-replies.
+          let speakers = new Set<string>();
+          for (let round = 0; round <= 3; round++) {
+            const ctx = round === 0 ? context : contextLines(channel);
+            const responders = round === 0
+              ? selected
+              : (await pickResponders(
+                  [...personaMap.values()], 'conversation', ctx.at(-1) ?? '', ctx,
+                  { model: opts.model, timeoutMs: opts.timeoutMs }
+                )).filter(p => !speakers.has(p.name));
+            if (responders.length === 0) break;
+            for (const p of responders) {
+              const reply = await personaSayOnce(p, ctx.at(-1) ?? '', ctx, {
+                timeoutMs: opts.timeoutMs,
+                model: opts.model,
+              });
+              appendMessage(channel, {
+                author: 'persona', name: p.name,
+                display: `${p.emoji} ${p.name}`, text: reply,
+              });
+              replies.push({ name: p.name, emoji: p.emoji, reply });
+            }
+            speakers = new Set(responders.map(p => p.name));
           }
           json(res, { replies });
         } catch (err) {

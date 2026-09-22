@@ -104,7 +104,8 @@ export function startSlack(opts: SlackOptions): void {
   };
   /** 👀 on receipt → ✅ when replies are posted (myagent's ack pattern). */
   const react = (channel: string, ts: string, name: string) =>
-    app.client.reactions.add({ channel, timestamp: ts, name }).catch(() => {});
+    app.client.reactions.add({ channel, timestamp: ts, name })
+      .catch(e => console.error('reaction failed (needs reactions:write):', e?.data?.error ?? e));
   const unreact = (channel: string, ts: string, name: string) =>
     app.client.reactions.remove({ channel, timestamp: ts, name }).catch(() => {});
   /** Own user id, needed so ambient mode can skip messages that mention the bot
@@ -293,22 +294,43 @@ export function startSlack(opts: SlackOptions): void {
           void unreact(channel, e.ts, 'eyes');
           return;
         }
-        for (const persona of selected) {
-          const reply = await personaSayOnce(
-            persona,
-            `${author}: ${text}`,
-            context,
-            { timeoutMs: opts.timeoutMs, model: opts.model }
-          );
-          appendMessage(channel, {
-            author: 'persona', name: persona.name,
-            display: `${persona.emoji} ${persona.name}`, text: reply,
-          });
-          await app.client.chat.postMessage({
-            channel,
-            text: reply,
-            ...slackIdentity(persona),
-          });
+        /** Persona speaks: transient "thinking" note, then the real reply. */
+        const respondAs = async (persona: Persona, ctx: string[]) => {
+          const thinking = await app.client.chat.postMessage({
+            channel, text: `${persona.emoji} ${persona.name} が考え中…`,
+          }).catch(() => undefined);
+          try {
+            const reply = await personaSayOnce(
+              persona,
+              ctx.at(-1) ?? '',
+              ctx,
+              { timeoutMs: opts.timeoutMs, model: opts.model }
+            );
+            appendMessage(channel, {
+              author: 'persona', name: persona.name,
+              display: `${persona.emoji} ${persona.name}`, text: reply,
+            });
+            await app.client.chat.postMessage({
+              channel, text: reply, ...slackIdentity(persona),
+            });
+          } finally {
+            if (thinking?.ts) void app.client.chat.delete({ channel, ts: thinking.ts }).catch(() => {});
+          }
+        };
+
+        // Personas talk to each other too: after each round, re-ask the router
+        // whether anyone wants to jump in. Max 3 rounds; nobody answers themselves.
+        let speakers = new Set<string>();
+        for (let round = 0; round <= 3; round++) {
+          const ctx = round === 0 ? context : await channelContext(channel);
+          const responders = round === 0
+            ? selected
+            : (await pickResponders(personas(), 'conversation', ctx.at(-1) ?? '', ctx,
+                { model: opts.routerModel ?? opts.model, timeoutMs: opts.timeoutMs }))
+                .filter(p => !speakers.has(p.name));
+          if (responders.length === 0) break;
+          for (const persona of responders) await respondAs(persona, ctx);
+          speakers = new Set(responders.map(p => p.name));
         }
         await unreact(channel, e.ts, 'eyes');
         void react(channel, e.ts, 'white_check_mark');
