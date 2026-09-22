@@ -9,6 +9,10 @@ export interface Persona {
   prompt: string;
   model?: string;
   permissionMode?: string;
+  /** Slack display name override (defaults to name). */
+  slackName?: string;
+  /** Slack avatar: ":emoji_code:" or an image URL. */
+  icon?: string;
   source: 'global' | 'project';
   file: string;
 }
@@ -31,6 +35,8 @@ function parsePersonaFile(file: string, source: Persona['source']): Persona | nu
     prompt: m[2].trim(),
     model: meta.model || undefined,
     permissionMode: meta.permissionMode || undefined,
+    slackName: meta.slackName || undefined,
+    icon: meta.icon || undefined,
     source,
     file,
   };
@@ -69,9 +75,11 @@ export function scaffoldPersona(name: string, dir: string): string {
     `---
 name: ${name}
 emoji: 🎭
-description: 説明をここに
+description: 説明をここに（ルーターが発言者を選ぶときの判断材料になる）
 # model: opus
 # permissionMode: bypass
+# slackName: Slack 上の表示名（省略時は name）
+# icon: ":shield:" 形式の Slack 絵文字コードか画像 URL
 ---
 
 あなたは「${name}」というペルソナの Devin ワーカーです。

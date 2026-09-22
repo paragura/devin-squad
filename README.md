@@ -78,21 +78,34 @@ with live per-task status.
 ## Slack bot (socket mode)
 
 ```bash
-export SLACK_BOT_TOKEN=xoxb-...   # scopes: app_mentions:read, chat:write
+export SLACK_BOT_TOKEN=xoxb-...   # scopes: app_mentions:read, chat:write, chat:write.customize, channels:history
 export SLACK_APP_TOKEN=xapp-...   # app-level token, connections:write
 devin-squad slack --repo .
 ```
 
-Mention the bot in a channel:
+Two ways personas join the conversation:
+
+- **Ambient (default)** — the bot listens to channel `message` events; a
+  lightweight router call decides which 0–2 personas fit the message, and those
+  personas reply in-thread under their own name and avatar (`username` +
+  `icon_emoji`/`icon_url` per message). Disable with `--no-ambient`.
+- **Explicit mention** — `@squad <persona> <msg>` talks to that persona
+  directly, `plan`/`run` work as below.
+
+Commands via mention:
 
 - `@squad personas` — list personas
-- `@squad strict-reviewer このコードを見て` — chat as that persona
+- `@squad <persona> <msg>` — chat as that persona
 - `@squad plan <goal>` — decompose only
 - `@squad run <goal>` — plan → parallel run → progress + report in thread
 
+Persona avatar/name: set `slackName:` and `icon:` (`:emoji_code:` or image URL)
+in the persona frontmatter.
+
 Setup: create a Slack app at api.slack.com, enable Socket Mode, add an
-app-level token with `connections:write`, add bot scopes above, install to
-your workspace.
+app-level token with `connections:write`, add the bot scopes above, subscribe
+to the `app_mention` and `message.channels` bot events, install to your
+workspace. For private channels also add `groups:history` + `message.groups`.
 
 `tasks.json`:
 

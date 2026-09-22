@@ -260,6 +260,8 @@ try {
       permissionMode: opts.permissionMode,
       timeoutMs: opts.timeoutMs,
       model: opts.model,
+      routerModel: flags['router-model'] ? String(flags['router-model']) : undefined,
+      ambient: flags['no-ambient'] !== true,
       extraArgs: opts.extraArgs,
     });
     await new Promise(() => {});
