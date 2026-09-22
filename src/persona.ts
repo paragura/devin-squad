@@ -69,6 +69,8 @@ const SECRETARY_FALLBACK: Persona = {
   name: 'secretary',
   emoji: '🗂️',
   description: '社長秘書 — チームが人間の判断を必要とするときだけ発言する',
+  slackName: '秘書',
+  icon: ':ledger:',
   prompt:
     'あなたは社長秘書です。チームの議論を見守り、社長（ユーザー）への確認や判断が必要なときだけ発言します。' +
     '要点を簡潔にまとめ、結論が出やすい形で質問してください。丁寧だが簡潔に。',

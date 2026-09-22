@@ -30,7 +30,7 @@ const { readMessages, directChannel } = await import('../dist/store.js');
 const { parseArgs } = await import('../dist/args.js');
 const { serve } = await import('../dist/server.js');
 const { planTasks } = await import('../dist/planner.js');
-const { formatSlackRunStatus } = await import('../dist/slack.js');
+const { formatSlackRunStatus, slackIdentity } = await import('../dist/slack.js');
 
 after(() => {
   fs.rmSync(temp, { recursive: true, force: true });
@@ -327,6 +327,40 @@ test('Slack process lease rejects duplicate bots and run status is readable', as
       125_000,
     ),
     '現在: *タスクを実行中* · 経過 2分5秒 · 1/3タスク',
+  );
+});
+
+test('Slack persona identity supports emoji, HTTPS images, and legacy defaults', () => {
+  assert.deepEqual(
+    slackIdentity({
+      name: 'research-otaku',
+      emoji: '🔬',
+      description: 'researcher',
+      prompt: 'research',
+      slackName: 'リサーチ担当',
+      icon: ':microscope:',
+    }),
+    { username: 'リサーチ担当', icon_emoji: ':microscope:' },
+  );
+  assert.deepEqual(
+    slackIdentity({
+      name: 'brand-designer',
+      emoji: '🖌️',
+      description: 'designer',
+      prompt: 'design',
+      slackName: 'Brand Designer',
+      icon: 'https://example.com/designer.png',
+    }),
+    { username: 'Brand Designer', icon_url: 'https://example.com/designer.png' },
+  );
+  assert.deepEqual(
+    slackIdentity({
+      name: 'alpha',
+      emoji: '🧪',
+      description: 'legacy persona',
+      prompt: 'test',
+    }),
+    { username: '🧪 alpha' },
   );
 });
 

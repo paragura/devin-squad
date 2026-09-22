@@ -72,7 +72,7 @@ type SlackIdentity =
   | { username?: string; icon_url: string; icon_emoji?: never }
   | { username?: string };
 
-function slackIdentity(persona: Persona): SlackIdentity {
+export function slackIdentity(persona: Persona): SlackIdentity {
   const username = persona.slackName ?? `${persona.emoji} ${persona.name}`;
   if (persona.icon?.startsWith('http')) return { username, icon_url: persona.icon };
   if (persona.icon?.startsWith(':')) return { username, icon_emoji: persona.icon };

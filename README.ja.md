@@ -76,8 +76,10 @@ cp -n examples/personas/*.md "$HOME/.devin-squad/personas/"
 devin-squad personas
 ```
 
-レビュアー、フロントエンド担当、リサーチャー、秘書のサンプルが入っています。
-`cp -n`は、同名の既存ファイルを上書きしません。役割や口調は自由に編集できます。
+開発・事業づくり向けの、下記10種類のサンプルがすべて追加されます。
+`cp -n`は未配置のテンプレートだけを追加し、同名の既存ファイルは上書きしません。
+すでにペルソナをカスタマイズしている場合は、変更を失わないよう、サンプルにある
+`slackName`と`icon`を既存ファイルへ手動でマージしてください。役割や口調は自由に編集できます。
 
 ## Web UIを起動する
 
@@ -275,6 +277,26 @@ icon: :shield:
 ヘッダーは単一行の`key: value`を読む簡易形式で、完全なYAMLではありません。
 `icon: :shield:`のような値は引用符で囲まずに記載してください。`icon`にはHTTPSの画像URLも指定できます。
 `description`は、ルーターが応答するメンバーを選ぶために使います。
+
+### 同梱ペルソナ
+
+| ペルソナ | Slack表示名 | アイコン | 担当 |
+| --- | --- | --- | --- |
+| `frontend-dev` | フロントエンド担当 | `:art:` | UI・UX・フロントエンド実装 |
+| `research-otaku` | リサーチ担当 | `:microscope:` | 一次情報・市場調査 |
+| `secretary` | 秘書 | `:ledger:` | 要約・人間への確認 |
+| `strict-reviewer` | 厳格レビュアー | `:shield:` | コード品質・正しさ・安全性 |
+| `business-strategist` | 事業戦略担当 | `:compass:` | 事業モデル・優位性・選択肢比較 |
+| `customer-researcher` | 顧客調査担当 | `:busts_in_silhouette:` | ICP・JTBD・インタビュー設計 |
+| `pricing-strategist` | 価格戦略担当 | `:label:` | 価格・プラン・課金単位・WTP検証 |
+| `growth-marketer` | グロース担当 | `:mega:` | ポジショニング・販路・獲得実験 |
+| `finance-operator` | 収支・運営担当 | `:moneybag:` | 粗利・CAC/LTV・資金・運用負荷 |
+| `risk-skeptic` | リスク担当 | `:warning:` | 前提崩し・競合・規制・撤退条件 |
+
+`slackName`は投稿者名、`icon: :compass:`のようなSlack絵文字は`icon_emoji`、
+HTTPS URLは`icon_url`として投稿時に使われます。表示名とアイコンの変更には、上の
+Slack設定に記載した`chat:write.customize`スコープが必要です。ルーターが選ぶ応答者は
+これまでどおり最大2人です。
 
 | 保存先                              | 適用範囲                                             |
 | ----------------------------------- | ---------------------------------------------------- |

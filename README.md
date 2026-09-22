@@ -87,9 +87,12 @@ cp -n examples/personas/*.md "$HOME/.devin-squad/personas/"
 devin-squad personas
 ```
 
-The examples include a reviewer, frontend developer, researcher, and secretary.
-They use Japanese prompts; edit them to use your preferred language and style.
-`cp -n` leaves existing persona files unchanged.
+The examples install all ten personas listed below, covering development and
+business-building work. They use Japanese prompts; edit them to use your
+preferred language and style. `cp -n` adds templates that are missing, but never
+overwrites an existing persona file. If you already customized a persona, merge
+the `slackName` and `icon` fields from its example manually to get the new Slack
+identity without losing your changes.
 
 ## Start the Web UI
 
@@ -305,6 +308,26 @@ suggestion. Keep your replies concise and respond in the user's language.
 The header parser supports single-line `key: value` fields, not full YAML. Leave
 values such as `icon: :shield:` unquoted. An HTTPS image URL can also be used for
 `icon`. Persona descriptions help the router choose responders.
+
+### Included persona templates
+
+| Persona | Slack name | Icon | Focus |
+| --- | --- | --- | --- |
+| `frontend-dev` | フロントエンド担当 | `:art:` | UI, UX, and frontend implementation |
+| `research-otaku` | リサーチ担当 | `:microscope:` | Primary sources and market research |
+| `secretary` | 秘書 | `:ledger:` | Summaries and decisions needed from a human |
+| `strict-reviewer` | 厳格レビュアー | `:shield:` | Code quality, correctness, and safety |
+| `business-strategist` | 事業戦略担当 | `:compass:` | Business models, advantages, and strategic choices |
+| `customer-researcher` | 顧客調査担当 | `:busts_in_silhouette:` | ICP, JTBD, and customer interviews |
+| `pricing-strategist` | 価格戦略担当 | `:label:` | Pricing, packaging, billing metrics, and WTP tests |
+| `growth-marketer` | グロース担当 | `:mega:` | Positioning, channels, and acquisition experiments |
+| `finance-operator` | 収支・運営担当 | `:moneybag:` | Margins, CAC/LTV, cash, and operational load |
+| `risk-skeptic` | リスク担当 | `:warning:` | Assumptions, competition, regulation, and exit criteria |
+
+`slackName` controls the displayed author name. A Slack emoji shortcode such as
+`icon: :compass:` sets `icon_emoji`; an HTTPS URL sets `icon_url`. Slack posting
+with customized names and icons requires the `chat:write.customize` scope shown
+in the Slack setup above. The router still selects at most two responders.
 
 | Location                            | Applies to                                                   |
 | ----------------------------------- | ------------------------------------------------------------ |
