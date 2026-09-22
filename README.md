@@ -78,7 +78,7 @@ with live per-task status.
 ## Slack bot (socket mode)
 
 ```bash
-export SLACK_BOT_TOKEN=xoxb-...   # scopes: app_mentions:read, chat:write, chat:write.customize, channels:history
+export SLACK_BOT_TOKEN=xoxb-...   # scopes: app_mentions:read, chat:write, chat:write.customize, channels:history, reactions:write (+ channels:manage for run channels)
 export SLACK_APP_TOKEN=xapp-...   # app-level token, connections:write
 devin-squad slack --repo .
 ```

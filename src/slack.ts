@@ -61,6 +61,11 @@ export function startSlack(opts: SlackOptions): void {
   const personas = () => [...listPersonas(opts.repo).values()];
   /** channel → last persona that spoke (router hint for conversation continuity). */
   const lastSpeaker = new Map<string, string>();
+  /** 👀 on receipt → ✅ when replies are posted (myagent's ack pattern). */
+  const react = (channel: string, ts: string, name: string) =>
+    app.client.reactions.add({ channel, timestamp: ts, name }).catch(() => {});
+  const unreact = (channel: string, ts: string, name: string) =>
+    app.client.reactions.remove({ channel, timestamp: ts, name }).catch(() => {});
   /** Own user id, needed so ambient mode can skip messages that mention the bot
    * (they already fire app_mention; handling both would double-respond). */
   let botUserId: string | undefined;
@@ -136,6 +141,7 @@ export function startSlack(opts: SlackOptions): void {
     const rest = restWords.join(' ');
     const help = helpText(botUserId ? `<@${botUserId}>` : 'このボット');
 
+    void react(event.channel, event.ts, 'eyes');
     try {
       if (!text || head === 'help') return void (await sayChan(help));
       if (head === 'personas') {
@@ -184,6 +190,7 @@ export function startSlack(opts: SlackOptions): void {
       const channel = e.channel!;
       const text = e.text!;
       const user = e.user!;
+      void react(channel, e.ts, 'eyes');
       try {
         const selected = await pickResponders(
           personas(),
@@ -192,6 +199,10 @@ export function startSlack(opts: SlackOptions): void {
           lastSpeaker.get(channel),
           { model: opts.routerModel, timeoutMs: opts.timeoutMs }
         );
+        if (selected.length === 0) {
+          void unreact(channel, e.ts, 'eyes');
+          return;
+        }
         for (const persona of selected) {
           const reply = await personaSay(
             persona,
@@ -205,7 +216,10 @@ export function startSlack(opts: SlackOptions): void {
             ...slackIdentity(persona),
           });
         }
+        await unreact(channel, e.ts, 'eyes');
+        void react(channel, e.ts, 'white_check_mark');
       } catch (err) {
+        void unreact(channel, e.ts, 'eyes');
         console.error('ambient routing error:', err);
       }
     });
