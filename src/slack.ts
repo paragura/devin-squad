@@ -1,6 +1,5 @@
 import { App } from '@slack/bolt';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { listPersonas, getPersona, Persona } from './persona.js';
 import { personaSay } from './talk.js';
@@ -8,7 +7,7 @@ import { planTasks } from './planner.js';
 import { runSquad } from './scheduler.js';
 import { newRunDir } from './paths.js';
 import { writeReport } from './report.js';
-import { runDevin } from './devin.js';
+import { pickResponders } from './router.js';
 import type { SquadOptions, SquadTask } from './types.js';
 
 export interface SlackOptions {
@@ -46,55 +45,6 @@ function slackIdentity(persona: Persona): SlackIdentity {
   return { username };
 }
 
-async function pickResponders(
-  personas: Persona[],
-  author: string,
-  text: string,
-  threadPersona: string | undefined,
-  opts: { model?: string; timeoutMs: number }
-): Promise<Persona[]> {
-  if (personas.length === 0) return [];
-  const routerDir = path.join(os.homedir(), '.devin-squad', 'router');
-  fs.mkdirSync(routerDir, { recursive: true });
-  const roster = personas.map(p => `- ${p.name}: ${p.description}`).join('\n');
-  const threadNote = threadPersona
-    ? `\nこのチャンネルで直前に「${threadPersona}」が応答しています。会話の続きならそのペルソナを優先してください。`
-    : '';
-  const prompt = `You are a router for a team chat tool. Decide which personas should respond to the following Slack message.
-
-Persona roster:
-${roster}
-${threadNote}
-Rules:
-- Pick 0-2 personas whose role genuinely fits the message.
-- Return [] for small talk between humans, noise, or messages needing no response.
-- If the message continues a persona's thread, prefer that persona.
-- Reply with ONLY a JSON array of persona names, e.g. ["strict-reviewer"] or []
-
-Message from ${author}: ${text.slice(0, 2000)}`;
-
-  const r = await runDevin({
-    cwd: routerDir,
-    prompt,
-    permissionMode: 'normal',
-    timeoutMs: opts.timeoutMs,
-    model: opts.model,
-  });
-  if (r.exitCode !== 0) return [];
-  const m = r.stdout.match(/\[[\s\S]*?\]/);
-  if (!m) return [];
-  let names: string[];
-  try {
-    names = JSON.parse(m[0]);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(names)) return [];
-  return names
-    .map(n => personas.find(p => p.name === n))
-    .filter((p): p is Persona => p !== undefined);
-}
-
 export function startSlack(opts: SlackOptions): void {
   const botToken = process.env.SLACK_BOT_TOKEN;
   const appToken = process.env.SLACK_APP_TOKEN;
@@ -103,6 +53,11 @@ export function startSlack(opts: SlackOptions): void {
   }
 
   const app = new App({ token: botToken, appToken, socketMode: true });
+  app.use(async ({ body, next }) => {
+    const ev = (body as { event?: { type?: string; subtype?: string } }).event;
+    console.log('[slack]', body.type, ev?.type ?? '', ev?.subtype ?? '');
+    await next();
+  });
   const personas = () => [...listPersonas(opts.repo).values()];
   /** channel → last persona that spoke (router hint for conversation continuity). */
   const lastSpeaker = new Map<string, string>();
@@ -110,7 +65,36 @@ export function startSlack(opts: SlackOptions): void {
    * (they already fire app_mention; handling both would double-respond). */
   let botUserId: string | undefined;
 
-  const runGoal = async (goal: string, sayChan: (text: string) => Promise<unknown>) => {
+  /** Create a dedicated channel for a run; falls back to posting in-channel. */
+  const makeRunChannel = async (goal: string): Promise<string | undefined> => {
+    const slug = goal
+      .toLowerCase()
+      .replace(/[^a-z0-9一-龯ぁ-んァ-ヶ]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'run';
+    try {
+      const res = await app.client.conversations.create({
+        name: `squad-${slug}`.slice(0, 80),
+      });
+      return res.channel?.id;
+    } catch (err) {
+      console.error('channel create failed (needs channels:manage):', err);
+      return undefined;
+    }
+  };
+
+  const runGoal = async (goal: string, channel: string) => {
+    // Dedicated channel per run — progress goes there, fallback to origin channel.
+    const runChannel = (await makeRunChannel(goal)) ?? channel;
+    const sayChan = (t: string) =>
+      app.client.chat.postMessage({ channel: runChannel, text: t }).then(() => {});
+    if (runChannel !== channel) {
+      await app.client.chat.postMessage({
+        channel,
+        text: `🐝 run を <#${runChannel}> で開始しました: ${goal}`,
+      });
+      await sayChan(`goal: ${goal}`);
+    }
     await sayChan('📐 planning…');
     const tasks = await planTasks(goal, { cwd: opts.repo, model: opts.model, timeoutMs: opts.timeoutMs });
     await sayChan(tasks.map(t => `• \`${t.id}\` ${t.title}`).join('\n'));
@@ -166,7 +150,7 @@ export function startSlack(opts: SlackOptions): void {
       }
       if (head === 'run') {
         if (!rest) return void (await sayChan('goal が必要です'));
-        return void (await runGoal(rest, sayChan));
+        return void (await runGoal(rest, event.channel));
       }
       const persona = getPersona(head, opts.repo);
       if (persona && rest) {
@@ -190,25 +174,33 @@ export function startSlack(opts: SlackOptions): void {
         bot_id?: string; subtype?: string; text?: string; user?: string;
         thread_ts?: string; ts: string; channel?: string;
       };
-      if (e.bot_id || e.subtype || !e.text?.trim() || !e.user) return;
-      if (botUserId && e.text.includes(`<@${botUserId}>`)) return;
+      const skip = e.bot_id ? 'bot' : e.subtype ? `subtype:${e.subtype}` :
+        !e.text?.trim() ? 'empty' : !e.user ? 'no-user' : !e.channel ? 'no-channel' :
+        botUserId && e.text.includes(`<@${botUserId}>`) ? 'self-mention' : null;
+      if (skip) {
+        console.log('[ambient] skip:', skip, JSON.stringify(e.text ?? '').slice(0, 80));
+        return;
+      }
+      const channel = e.channel!;
+      const text = e.text!;
+      const user = e.user!;
       try {
         const selected = await pickResponders(
           personas(),
-          e.user,
-          e.text,
-          e.channel ? lastSpeaker.get(e.channel) : undefined,
+          user,
+          text,
+          lastSpeaker.get(channel),
           { model: opts.routerModel, timeoutMs: opts.timeoutMs }
         );
         for (const persona of selected) {
           const reply = await personaSay(
             persona,
-            `<@${e.user}> said: ${e.text}`,
+            `<@${user}> said: ${text}`,
             { timeoutMs: opts.timeoutMs }
           );
-          lastSpeaker.set(e.channel!, persona.name);
+          lastSpeaker.set(channel, persona.name);
           await app.client.chat.postMessage({
-            channel: e.channel!,
+            channel,
             text: reply,
             ...slackIdentity(persona),
           });

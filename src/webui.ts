@@ -58,7 +58,8 @@ export const PAGE_HTML = `<!doctype html>
   </section>
 </main>
 <script>
-var selected = null;
+var AMBIENT = '__ambient__';
+var selected = AMBIENT;
 var tasksData = null;
 var evtSource = null;
 
@@ -77,6 +78,16 @@ fetch('/api/state').then(function(r){return r.json()}).then(function(s){
 function renderPersonas(personas) {
   var box = document.getElementById('personas');
   box.innerHTML = '';
+  var amb = el('div', 'persona active');
+  amb.appendChild(el('div', null, '🌐 ambient'));
+  amb.appendChild(el('div', 'desc', 'みんな — 関係するペルソナが勝手に反応'));
+  amb.onclick = function(){
+    selected = AMBIENT;
+    document.querySelectorAll('.persona').forEach(function(x){x.classList.remove('active')});
+    amb.classList.add('active');
+    addMsg('persona', '🌐 ambient', '（全員に聞こえています。関係するペルソナが応答します）');
+  };
+  box.appendChild(amb);
   personas.forEach(function(p){
     var d = el('div', 'persona');
     d.appendChild(el('div', null, p.emoji + ' ' + p.name));
@@ -107,6 +118,18 @@ function send() {
   addMsg('me', null, text);
   var thinking = el('div', 'msg persona', '…');
   document.getElementById('chat').appendChild(thinking);
+  if (selected === AMBIENT) {
+    fetch('/api/ambient', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text})})
+      .then(function(r){return r.json()})
+      .then(function(r){
+        thinking.remove();
+        if (r.error) { addMsg('persona', '⚠️', r.error); return; }
+        if (!r.replies || r.replies.length === 0) { addMsg('persona', '🌐', '（誰も反応しませんでした）'); return; }
+        r.replies.forEach(function(x){ addMsg('persona', x.emoji + ' ' + x.name, x.reply); });
+      })
+      .catch(function(e){ thinking.textContent = 'error: ' + e; });
+    return;
+  }
   fetch('/api/chat', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona:selected,message:text})})
     .then(function(r){return r.json()})
     .then(function(r){ thinking.textContent = r.reply || r.error; thinking.scrollIntoView(); })

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PAGE_HTML } from './webui.js';
 import { listPersonas, getPersona } from './persona.js';
 import { personaSay } from './talk.js';
+import { pickResponders } from './router.js';
 import { planTasks } from './planner.js';
 import { runSquad } from './scheduler.js';
 import { newRunDir } from './paths.js';
@@ -42,6 +43,8 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 export function serve(opts: ServeOptions): http.Server {
   const runs = new Map<string, RunState>();
   const personaMap = new Map(listPersonas(opts.repo).map(p => [p.name, p]));
+  /** Ambient chat room: last persona that responded (router continuity hint). */
+  let lastSpeaker: string | undefined;
 
   const json = (res: http.ServerResponse, body: unknown, code = 200) => {
     res.writeHead(code, { 'content-type': 'application/json' });
@@ -70,6 +73,32 @@ export function serve(opts: ServeOptions): http.Server {
             name: p.name, emoji: p.emoji, description: p.description, source: p.source,
           })),
         });
+        return;
+      }
+
+      // Ambient chat: router picks 0-2 personas who "want" to respond.
+      if (req.method === 'POST' && url.pathname === '/api/ambient') {
+        const body = JSON.parse(await readBody(req));
+        const message = String(body.message ?? '');
+        if (!message.trim()) return json(res, { replies: [] });
+        try {
+          const selected = await pickResponders(
+            [...personaMap.values()],
+            'you',
+            message,
+            lastSpeaker,
+            { model: opts.model, timeoutMs: opts.timeoutMs }
+          );
+          const replies = [];
+          for (const p of selected) {
+            const reply = await personaSay(p, message, { timeoutMs: opts.timeoutMs });
+            lastSpeaker = p.name;
+            replies.push({ name: p.name, emoji: p.emoji, reply });
+          }
+          json(res, { replies });
+        } catch (err) {
+          json(res, { error: String(err instanceof Error ? err.message : err) }, 500);
+        }
         return;
       }
 
