@@ -3,6 +3,39 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/**
+ * Internal devin calls run with an isolated XDG_DATA_HOME so their sessions
+ * live in a private sessions.db and never appear in Devin Desktop. Auth and
+ * workspace trust are shared via symlinks to the real data dir.
+ */
+const ISOLATED_DATA_HOME = path.join(os.homedir(), '.devin-squad', 'devin-home');
+let dataHomeReady = false;
+
+function isolatedDataHome(): string {
+  if (dataHomeReady) return ISOLATED_DATA_HOME;
+  const real = path.join(os.homedir(), '.local', 'share', 'devin');
+  const dir = path.join(ISOLATED_DATA_HOME, 'devin');
+  fs.mkdirSync(path.join(dir, 'cli'), { recursive: true });
+  const links: [string, string][] = [
+    [path.join(real, 'credentials.toml'), path.join(dir, 'credentials.toml')],
+    [
+      path.join(real, 'cli', 'trusted_workspaces.json'),
+      path.join(dir, 'cli', 'trusted_workspaces.json'),
+    ],
+  ];
+  for (const [target, link] of links) {
+    try {
+      if (!fs.existsSync(link)) fs.symlinkSync(target, link);
+    } catch { /* best-effort */ }
+  }
+  dataHomeReady = true;
+  return ISOLATED_DATA_HOME;
+}
+
+function devinEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, XDG_DATA_HOME: isolatedDataHome() };
+}
+
 export interface DevinRunResult {
   stdout: string;
   stderr: string;
@@ -36,7 +69,7 @@ export function runDevin(opts: DevinRunOptions): Promise<DevinRunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn('devin', args, {
       cwd: opts.cwd,
-      env: process.env,
+      env: devinEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -84,7 +117,8 @@ export function runDevin(opts: DevinRunOptions): Promise<DevinRunResult> {
  * Desktop's session list. Fire-and-forget, best-effort.
  */
 export function cleanSessions(dir: string, olderThanSec = 60): void {
-  execFile('devin', ['list', '--format', 'json'], { cwd: dir }, (e, out) => {
+  const env = devinEnv();
+  execFile('devin', ['list', '--format', 'json'], { cwd: dir, env }, (e, out) => {
     if (e) return;
     try {
       const parsed = JSON.parse(out) as unknown;
@@ -93,13 +127,13 @@ export function cleanSessions(dir: string, olderThanSec = 60): void {
         last_activity_at?: number;
       }[];
       const cutoff = Date.now() / 1000 - olderThanSec;
-      const lockDir = path.join(os.homedir(), '.local', 'share', 'devin', 'cli', 'session_locks');
+      const lockDir = path.join(isolatedDataHome(), 'devin', 'cli', 'session_locks');
       for (const s of list) {
         if (!s.id || (s.last_activity_at ?? 0) >= cutoff) continue;
-        // devin rm refuses while a lockfile is held (e.g. by Devin Desktop
-        // showing the session). These are disposable calls — drop the lock.
+        // devin rm refuses while a lockfile is held. These are disposable
+        // calls — drop the stale lock first.
         try { fs.unlinkSync(path.join(lockDir, `${s.id}.lock`)); } catch { /* absent */ }
-        execFile('devin', ['rm', s.id, '--force'], { cwd: dir }, () => {});
+        execFile('devin', ['rm', s.id, '--force'], { cwd: dir, env }, () => {});
       }
     } catch { /* cleanup is best-effort */ }
   });
