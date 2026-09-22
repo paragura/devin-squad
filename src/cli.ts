@@ -32,7 +32,8 @@ Options:
   --mode <mode>          devin permission mode (default: bypass; use autonomous with --sandbox)
   --sandbox              Pass --sandbox to devin (forces autonomous mode)
   --timeout <minutes>    Per-worker timeout (default: 30)
-  --model <name>         Model for workers (e.g. opus)
+  --model <name>         Model for workers (default: swe-2-medium — the free tier)
+  --router-model <name>  (slack) Model for the ambient router (default: --model)
   --keep-worktrees       Keep worktrees even when a task made no changes
   --persona <name>       Run all tasks as this persona (task-level "persona" wins)
   --out <file>           (plan) Output file (default: tasks.json)
@@ -71,7 +72,7 @@ function resolveOptions(flags: Record<string, string | boolean>): SquadOptions {
     concurrency: Number(flags.concurrency ?? 3),
     permissionMode: sandbox ? 'autonomous' : String(flags.mode ?? 'bypass'),
     timeoutMs: Number(flags.timeout ?? 30) * 60_000,
-    model: flags.model ? String(flags.model) : undefined,
+    model: flags.model ? String(flags.model) : 'swe-2-medium',
     keepWorktrees: flags['keep-worktrees'] === true,
     extraArgs: [
       ...(sandbox ? ['--sandbox'] : []),

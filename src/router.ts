@@ -1,8 +1,31 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { Persona } from './persona.js';
 import { runDevin } from './devin.js';
+
+/**
+ * Router sessions are disposable (no resume needed) — delete them so they
+ * don't pile up in Devin Desktop's session list. Fire-and-forget.
+ */
+function cleanRouterSessions(routerDir: string): void {
+  execFile('devin', ['list', '--format', 'json'], { cwd: routerDir }, (e, out) => {
+    if (e) return;
+    try {
+      const parsed = JSON.parse(out);
+      const list: { id?: string; last_activity_at?: number }[] =
+        Array.isArray(parsed) ? parsed : parsed.sessions ?? [];
+      const cutoff = Date.now() / 1000 - 60;
+      for (const s of list) {
+        // skip sessions that may still be in flight (concurrent messages)
+        if (s.id && (s.last_activity_at ?? 0) < cutoff) {
+          execFile('devin', ['rm', s.id, '--force'], { cwd: routerDir }, () => {});
+        }
+      }
+    } catch { /* cleanup is best-effort */ }
+  });
+}
 
 /**
  * Lightweight router: one devin -p call decides which 0-2 personas should
@@ -41,6 +64,7 @@ Message from ${author}: ${text.slice(0, 2000)}`;
     timeoutMs: opts.timeoutMs,
     model: opts.model,
   });
+  cleanRouterSessions(routerDir);
   if (r.exitCode !== 0) {
     console.error('[router] devin failed:', r.stderr.slice(0, 200));
     return [];
