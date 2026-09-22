@@ -1,4 +1,5 @@
 import { App } from '@slack/bolt';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { listPersonas, getPersona, Persona } from './persona.js';
@@ -9,7 +10,7 @@ import { runSquad } from './scheduler.js';
 import { newRunDir } from './paths.js';
 import { writeReport } from './report.js';
 import { converse } from './conversation.js';
-import { serial, claimSlackEvent } from './coordination.js';
+import { serial, claimSlackEvent, claimProcess } from './coordination.js';
 import type { SquadOptions } from './types.js';
 
 export interface SlackOptions {
@@ -30,7 +31,38 @@ function helpText(botMention: string): string {
 - \`${botMention} <persona> <msg>\` — そのペルソナと会話
 - \`${botMention} plan <goal>\` — タスク分解だけする
 - \`${botMention} run <goal>\` — 分解→並列実行→レポートまで全部
+- \`${botMention} status\` — このチャンネルの run の状態
 ambient モードではメンションなしの発言にも関係するペルソナが勝手に反応します`;
+}
+
+type SlackRunPhase = 'starting' | 'planning' | 'running' | 'done' | 'failed';
+interface SlackRunState {
+  goal: string;
+  originChannel: string;
+  runChannel: string;
+  phase: SlackRunPhase;
+  startedAt: number;
+  updatedAt: number;
+  completed: number;
+  total?: number;
+  runDir?: string;
+  error?: string;
+}
+
+const phaseLabel: Record<SlackRunPhase, string> = {
+  starting: '開始準備中',
+  planning: '計画を作成中',
+  running: 'タスクを実行中',
+  done: '完了',
+  failed: '失敗',
+};
+
+export function formatSlackRunStatus(state: SlackRunState, now = Date.now()): string {
+  const elapsed = Math.max(0, Math.floor((now - state.startedAt) / 1000));
+  const duration = elapsed < 60 ? `${elapsed}秒` : `${Math.floor(elapsed / 60)}分${elapsed % 60}秒`;
+  const tasks = state.total === undefined ? '' : ` · ${state.completed}/${state.total}タスク`;
+  const error = state.error ? `\n⚠️ ${state.error}` : '';
+  return `現在: *${phaseLabel[state.phase]}* · 経過 ${duration}${tasks}${error}`;
 }
 
 // Slack's Authorship type makes icon_emoji and icon_url mutually exclusive,
@@ -47,7 +79,7 @@ function slackIdentity(persona: Persona): SlackIdentity {
   return { username };
 }
 
-export function startSlack(opts: SlackOptions): void {
+export async function startSlack(opts: SlackOptions): Promise<void> {
   const botToken = process.env.SLACK_BOT_TOKEN;
   const appToken = process.env.SLACK_APP_TOKEN;
   if (!botToken || !appToken) {
@@ -56,7 +88,15 @@ export function startSlack(opts: SlackOptions): void {
     );
   }
 
+  const lease = claimProcess(
+    `slack:${crypto.createHash('sha256').update(appToken).digest('hex')}`,
+    {
+      repo: opts.repo,
+    },
+  );
   const app = new App({ token: botToken, appToken, socketMode: true });
+  const runsByChannel = new Map<string, SlackRunState>();
+  const startingChannels = new Set<string>();
   app.use(async ({ body, next }) => {
     const ev = (body as { event?: { type?: string; subtype?: string } }).event;
     console.log('[slack]', body.type, ev?.type ?? '', ev?.subtype ?? '');
@@ -140,93 +180,157 @@ export function startSlack(opts: SlackOptions): void {
   };
 
   const runGoal = async (goal: string, channel: string) => {
+    const runDir = newRunDir(opts.repo);
+    const state: SlackRunState = {
+      goal,
+      originChannel: channel,
+      runChannel: channel,
+      phase: 'starting',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      completed: 0,
+      runDir,
+    };
+    const statePath = path.join(runDir, 'slack-run.json');
+    const saveState = () => {
+      state.updatedAt = Date.now();
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+    };
+    runsByChannel.set(channel, state);
+    saveState();
+
     // Dedicated channel per run — progress goes there, fallback to origin channel.
     const runChannel = (await makeRunChannel(goal)) ?? channel;
+    state.runChannel = runChannel;
+    runsByChannel.set(runChannel, state);
     const sayChan = (t: string) =>
       app.client.chat.postMessage({ channel: runChannel, text: t }).then(() => {});
-    if (runChannel !== channel) {
-      await app.client.chat.postMessage({
-        channel,
-        text: `🐝 run を <#${runChannel}> で開始しました: ${goal}`,
-      });
-      await sayChan(`goal: ${goal}`);
-    }
-    await sayChan('📐 planning…');
-    const tasks = await planTasks(goal, {
-      cwd: opts.repo,
-      model: opts.model,
-      timeoutMs: opts.timeoutMs,
-    });
-    await sayChan(tasks.map((t) => `• \`${t.id}\` ${t.title}`).join('\n'));
-    await sayChan(`🐝 run start (${tasks.length} tasks)`);
-    const runDir = newRunDir(opts.repo);
-    fs.writeFileSync(path.join(runDir, 'tasks.json'), JSON.stringify({ goal, tasks }, null, 2));
-    const byTask = new Map(tasks.map((t) => [t.id, t]));
-    const squadOpts: SquadOptions = {
-      repo: opts.repo,
-      concurrency: opts.concurrency,
-      permissionMode: opts.permissionMode,
-      timeoutMs: opts.timeoutMs,
-      model: opts.model,
-      keepWorktrees: false,
-      extraArgs: opts.extraArgs,
-      personas: new Map(personas().map((p) => [p.name, p])),
-      onEvent: (ev) => {
-        const personaName = 'taskId' in ev ? byTask.get(ev.taskId)?.persona : undefined;
-        const persona = personaName ? getPersona(personaName, opts.repo) : undefined;
-        const who = persona ? `${persona.emoji} *${persona.name}* ` : '';
-        const line =
-          ev.type === 'task-start'
-            ? `▶️ ${who}${ev.taskId} started`
-            : ev.type === 'task-done'
-              ? `${ev.status === 'success' ? '✅' : '❌'} ${who}${ev.taskId} ${ev.status} (${Math.round(ev.durationMs / 1000)}s)${ev.changed ? ' · changes' : ''}`
-              : ev.type === 'task-skip'
-                ? `➖ ${ev.taskId} skipped`
-                : null;
-        if (line) void sayChan(line).catch((e) => console.error('progress delivery failed:', e));
-      },
-    };
-    const results = await runSquad(tasks, squadOpts, runDir);
-    const report = writeReport(runDir, results, goal);
-    const ok = results.filter((r) => r.status === 'success');
-    const kept = results
-      .filter((r) => r.changed)
-      .map((r) => `\`${r.branch}\``)
-      .join(', ');
-    await sayChan(
-      `🏁 done: ${ok.length}/${results.length} succeeded${kept ? `\nbranches: ${kept}` : ''}\nreport: \`${report}\``,
-    );
+    let noticeCount = 0;
+    let lastNotice = state.startedAt;
+    const heartbeat = setInterval(() => {
+      if (!['planning', 'running'].includes(state.phase)) return;
+      const now = Date.now();
+      if ((noticeCount === 0 && now - lastNotice >= 60_000) || now - lastNotice >= 300_000) {
+        noticeCount++;
+        lastNotice = now;
+        void sayChan(`⏳ ${formatSlackRunStatus(state, now)}`).catch((error) =>
+          console.error('run heartbeat delivery failed:', error),
+        );
+      }
+    }, 30_000);
 
-    // Artifacts → files + channel canvas (scopes: files:write, canvases:write)
-    const reportMd = fs.existsSync(report) ? fs.readFileSync(report, 'utf8') : '';
-    if (reportMd) {
-      void app.client.conversations.canvases
-        .create({
-          channel_id: runChannel,
-          title: `squad run — ${goal.slice(0, 60)}`,
-          document_content: { type: 'markdown', markdown: reportMd },
-        })
-        .catch((e) => console.error('canvas create failed (needs canvases:write):', e));
-      void app.client.files
-        .uploadV2({
-          channel_id: runChannel,
-          filename: 'report.md',
-          content: reportMd,
-          initial_comment: '📋 run report',
-        })
-        .catch((e) => console.error('file upload failed (needs files:write):', e));
-    }
-    for (const r of results.filter((x) => x.changed)) {
-      const diffPath = path.join(runDir, r.task.id, 'diff.patch');
-      if (!fs.existsSync(diffPath)) continue;
-      void app.client.files
-        .uploadV2({
-          channel_id: runChannel,
-          filename: `${r.task.id}.diff.patch`,
-          content: fs.readFileSync(diffPath, 'utf8'),
-          initial_comment: `diff — ${r.task.title}`,
-        })
-        .catch(() => {});
+    try {
+      if (runChannel !== channel) {
+        await app.client.chat.postMessage({
+          channel,
+          text: `🐝 run を <#${runChannel}> で開始しました: ${goal}`,
+        });
+        await sayChan(`goal: ${goal}`);
+      }
+      state.phase = 'planning';
+      saveState();
+      await sayChan('📐 planning…（1分以上かかる場合は途中経過をお知らせします）');
+      const tasks = await planTasks(goal, {
+        cwd: opts.repo,
+        model: opts.model,
+        timeoutMs: opts.timeoutMs,
+        logPath: path.join(runDir, 'planner.log'),
+      });
+      state.phase = 'running';
+      state.total = tasks.length;
+      saveState();
+      await sayChan(tasks.map((t) => `• \`${t.id}\` ${t.title}`).join('\n'));
+      await sayChan(`🐝 run start (${tasks.length} tasks)`);
+      fs.writeFileSync(path.join(runDir, 'tasks.json'), JSON.stringify({ goal, tasks }, null, 2));
+      const byTask = new Map(tasks.map((t) => [t.id, t]));
+      const squadOpts: SquadOptions = {
+        repo: opts.repo,
+        concurrency: opts.concurrency,
+        permissionMode: opts.permissionMode,
+        timeoutMs: opts.timeoutMs,
+        model: opts.model,
+        keepWorktrees: false,
+        extraArgs: opts.extraArgs,
+        personas: new Map(personas().map((p) => [p.name, p])),
+        onEvent: (ev) => {
+          const personaName = 'taskId' in ev ? byTask.get(ev.taskId)?.persona : undefined;
+          const persona = personaName ? getPersona(personaName, opts.repo) : undefined;
+          const who = persona ? `${persona.emoji} *${persona.name}* ` : '';
+          if (ev.type === 'task-done' || ev.type === 'task-skip') state.completed++;
+          saveState();
+          const line =
+            ev.type === 'task-start'
+              ? `▶️ ${who}${ev.taskId} started`
+              : ev.type === 'task-done'
+                ? `${ev.status === 'success' ? '✅' : '❌'} ${who}${ev.taskId} ${ev.status} (${Math.round(ev.durationMs / 1000)}s)${ev.changed ? ' · changes' : ''}`
+                : ev.type === 'task-skip'
+                  ? `➖ ${ev.taskId} skipped`
+                  : null;
+          if (line) void sayChan(line).catch((e) => console.error('progress delivery failed:', e));
+        },
+      };
+      const results = await runSquad(tasks, squadOpts, runDir);
+      const report = writeReport(runDir, results, goal);
+      const ok = results.filter((r) => r.status === 'success');
+      const kept = results
+        .filter((r) => r.changed)
+        .map((r) => `\`${r.branch}\``)
+        .join(', ');
+      state.phase = 'done';
+      state.completed = results.length;
+      saveState();
+      await sayChan(
+        `🏁 done: ${ok.length}/${results.length} succeeded${kept ? `\nbranches: ${kept}` : ''}\nreport: \`${report}\``,
+      );
+
+      // Artifacts → files + channel canvas (scopes: files:write, canvases:write)
+      const reportMd = fs.existsSync(report) ? fs.readFileSync(report, 'utf8') : '';
+      if (reportMd) {
+        void app.client.conversations.canvases
+          .create({
+            channel_id: runChannel,
+            title: `squad run — ${goal.slice(0, 60)}`,
+            document_content: { type: 'markdown', markdown: reportMd },
+          })
+          .catch((e) => console.error('canvas create failed (needs canvases:write):', e));
+        void app.client.files
+          .uploadV2({
+            channel_id: runChannel,
+            filename: 'report.md',
+            content: reportMd,
+            initial_comment: '📋 run report',
+          })
+          .catch((e) => console.error('file upload failed (needs files:write):', e));
+      }
+      for (const r of results.filter((x) => x.changed)) {
+        const diffPath = path.join(runDir, r.task.id, 'diff.patch');
+        if (!fs.existsSync(diffPath)) continue;
+        void app.client.files
+          .uploadV2({
+            channel_id: runChannel,
+            filename: `${r.task.id}.diff.patch`,
+            content: fs.readFileSync(diffPath, 'utf8'),
+            initial_comment: `diff — ${r.task.title}`,
+          })
+          .catch(() => {});
+      }
+    } catch (error) {
+      state.phase = 'failed';
+      state.error = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
+      saveState();
+      console.error('Slack run failed:', error);
+      await sayChan(`❌ run failed\n${formatSlackRunStatus(state)}`).catch(() => {});
+      if (runChannel !== channel) {
+        await app.client.chat
+          .postMessage({
+            channel,
+            text: `❌ <#${runChannel}> の run が失敗しました: ${state.error}`,
+          })
+          .catch(() => {});
+      }
+    } finally {
+      clearInterval(heartbeat);
+      startingChannels.delete(channel);
     }
   };
 
@@ -243,10 +347,19 @@ export function startSlack(opts: SlackOptions): void {
         if (content) rest += `\n[添付: ${f.name ?? 'file'}]\n${content}`;
       }
       const help = helpText(botUserId ? `<@${botUserId}>` : 'このボット');
+      const runState = runsByChannel.get(event.channel);
 
       void react(event.channel, event.ts, 'eyes');
       try {
         if (!text || head === 'help') return void (await sayChan(help));
+        if (
+          head === 'status' ||
+          (runState && /(進捗|状況|どうな|どこまで|進めて|動いて|status)/i.test(text))
+        ) {
+          return void (await sayChan(
+            runState ? formatSlackRunStatus(runState) : 'このチャンネルに run の記録はありません',
+          ));
+        }
         if (head === 'personas') {
           const list = personas()
             .map((p) => `${p.emoji} *${p.name}* — ${p.description}`)
@@ -265,7 +378,26 @@ export function startSlack(opts: SlackOptions): void {
         }
         if (head === 'run') {
           if (!rest) return void (await sayChan('goal が必要です'));
-          return void (await runGoal(rest, event.channel));
+          const active = runsByChannel.get(event.channel);
+          if (
+            startingChannels.has(event.channel) ||
+            active?.phase === 'planning' ||
+            active?.phase === 'running'
+          ) {
+            return void (await sayChan(
+              active ? formatSlackRunStatus(active) : 'run の開始準備中です',
+            ));
+          }
+          startingChannels.add(event.channel);
+          await sayChan('🐝 run を受け付けました。準備を始めます…');
+          void runGoal(rest, event.channel).catch(async (error) => {
+            startingChannels.delete(event.channel);
+            console.error('Slack run failed before initialization:', error);
+            await sayChan(
+              `❌ run を開始できませんでした: ${error instanceof Error ? error.message : error}`,
+            ).catch(() => {});
+          });
+          return;
         }
         const persona = getPersona(head, opts.repo);
         if (persona && rest) {
@@ -335,7 +467,12 @@ export function startSlack(opts: SlackOptions): void {
             if (content) message += `\n[添付: ${f.name ?? 'file'}]\n${content}`;
           }
           const context = await channelContext(channel);
-          appendMessage(channel, { author: 'user', name: user, display: author, text: message });
+          appendMessage(channel, {
+            author: 'user',
+            name: user,
+            display: author,
+            text: message,
+          });
           await converse({
             personas: personas(),
             author,
@@ -368,13 +505,30 @@ export function startSlack(opts: SlackOptions): void {
     });
   }
 
-  void (async () => {
+  try {
     try {
       botUserId = (await app.client.auth.test()).user_id as string | undefined;
     } catch {
       // ambient dedup degrades gracefully without it
     }
     await app.start();
-    console.log(`devin-squad slack bot connected (repo: ${opts.repo}, ambient: ${opts.ambient})`);
-  })();
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      await app.stop();
+    } finally {
+      lease.release();
+      process.exit(0);
+    }
+  };
+  process.once('SIGINT', () => void stop());
+  process.once('SIGTERM', () => void stop());
+  console.log(`devin-squad slack bot connected (repo: ${opts.repo}, ambient: ${opts.ambient})`);
 }

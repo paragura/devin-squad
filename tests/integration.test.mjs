@@ -25,10 +25,12 @@ const { headSha, mergeBranch } = await import('../dist/git.js');
 const { runDevin, sessionIds } = await import('../dist/devin.js');
 const { personaSay } = await import('../dist/talk.js');
 const { converse } = await import('../dist/conversation.js');
-const { claimSlackEvent, serial } = await import('../dist/coordination.js');
+const { claimSlackEvent, serial, claimProcess } = await import('../dist/coordination.js');
 const { readMessages, directChannel } = await import('../dist/store.js');
 const { parseArgs } = await import('../dist/args.js');
 const { serve } = await import('../dist/server.js');
+const { planTasks } = await import('../dist/planner.js');
+const { formatSlackRunStatus } = await import('../dist/slack.js');
 
 after(() => {
   fs.rmSync(temp, { recursive: true, force: true });
@@ -50,7 +52,12 @@ function repo() {
   git(dir, 'commit', '-m', 'initial');
   return dir;
 }
-const task = (id, prompt = 'no changes', dependsOn = []) => ({ id, title: id, prompt, dependsOn });
+const task = (id, prompt = 'no changes', dependsOn = []) => ({
+  id,
+  title: id,
+  prompt,
+  dependsOn,
+});
 const options = (repo) => ({
   repo,
   concurrency: 3,
@@ -203,7 +210,12 @@ test('process output is bounded, full logs remain available, and missing executa
   process.env.PATH = path.join(temp, 'absent');
   try {
     await assert.rejects(
-      runDevin({ cwd: dir, prompt: 'x', permissionMode: 'normal', timeoutMs: 1000 }),
+      runDevin({
+        cwd: dir,
+        prompt: 'x',
+        permissionMode: 'normal',
+        timeoutMs: 1000,
+      }),
       /ENOENT/,
     );
   } finally {
@@ -291,6 +303,46 @@ test('Slack duplicate event receipts and serialized conversation work', async ()
     serial('test', async () => calls.push('c')),
   ]);
   assert.deepEqual(calls, ['a', 'b', 'c']);
+});
+
+test('Slack process lease rejects duplicate bots and run status is readable', async () => {
+  const first = claimProcess('slack:test-token', { repo: '/first' });
+  assert.throws(() => claimProcess('slack:test-token', { repo: '/second' }), /already running/);
+  first.release();
+  const second = claimProcess('slack:test-token', { repo: '/second' });
+  second.release();
+
+  assert.equal(
+    formatSlackRunStatus(
+      {
+        goal: 'test',
+        originChannel: 'C1',
+        runChannel: 'C2',
+        phase: 'running',
+        startedAt: 0,
+        updatedAt: 0,
+        completed: 1,
+        total: 3,
+      },
+      125_000,
+    ),
+    '現在: *タスクを実行中* · 経過 2分5秒 · 1/3タスク',
+  );
+});
+
+test('planner output is retained in a diagnostic log', async () => {
+  const dir = repo();
+  const log = path.join(dir, 'planner.log');
+  const tasks = await planTasks('test goal', {
+    cwd: dir,
+    timeoutMs: 5000,
+    logPath: log,
+  });
+  assert.deepEqual(
+    tasks.map((entry) => entry.id),
+    ['api', 'docs'],
+  );
+  assert.match(fs.readFileSync(log, 'utf8'), /"id":"api"/);
 });
 
 test('CLI parsing preserves spaces, equal signs and positional arguments', () => {
@@ -417,7 +469,12 @@ test('HTTP safety, chat history, execution state and artifact allowlist', async 
     assert.equal((await post('/api/run', { tasks: [task('../escape')] })).status, 400);
     assert.equal((await post('/api/run', { tasks: [task('a')], concurrency: 0 })).status, 400);
     assert.equal(
-      (await post('/api/chat', { persona: 'alpha', message: 'x'.repeat(1024 * 1024) })).status,
+      (
+        await post('/api/chat', {
+          persona: 'alpha',
+          message: 'x'.repeat(1024 * 1024),
+        })
+      ).status,
       413,
     );
     assert.equal((await fetch(base + '/api/chat', { method: 'POST', body: '{}' })).status, 415);
@@ -431,12 +488,19 @@ test('HTTP safety, chat history, execution state and artifact allowlist', async 
       ).status,
       400,
     );
-    const chat = { persona: 'alpha', message: 'hello', requestId: 'same-request' };
+    const chat = {
+      persona: 'alpha',
+      message: 'hello',
+      requestId: 'same-request',
+    };
     assert.equal((await post('/api/chat', chat)).status, 200);
     assert.equal((await post('/api/chat', chat)).status, 200);
     const history = await (await fetch(base + '/api/messages?persona=alpha')).json();
     assert.equal(history.messages.length, 2);
-    const submission = { tasks: [task('api', '[write api.txt yes]')], requestId: 'same-run' };
+    const submission = {
+      tasks: [task('api', '[write api.txt yes]')],
+      requestId: 'same-run',
+    };
     const run = await (await post('/api/run', submission)).json();
     assert.equal((await (await post('/api/run', submission)).json()).runId, run.runId);
     assert.equal(

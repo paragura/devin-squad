@@ -220,10 +220,16 @@ devin-squad slack --repo /absolute/path/to/your-project
 @devin-squad strict-reviewer この変更でテストすべき観点を教えて
 @devin-squad plan パーサーのテストを追加して、ドキュメントも更新して
 @devin-squad run パーサーのテストを追加して、ドキュメントも更新して
+@devin-squad status
 ```
 
 `plan`はタスクの提案までです。**`run`は計画後、そのままworkerを起動します。**
 Web UIのような、計画を確認してから実行する操作は挟みません。
+`run`の専用チャンネルでは、`status`または「いまどうなってる？」のようなメンションで状態を確認できます。
+計画・実行が長引いている間も定期的に経過を投稿し、失敗理由は専用チャンネルと指示元の両方に表示します。
+
+同じSlack Appトークンでbotを二重起動するとイベントの担当が不安定になるため、現在は2つ目の起動をエラーにします。
+更新後は古い`slack`プロセスを終了してから、1つだけ起動してください。
 
 ### 8. 通常の会話にも反応させるかを選ぶ
 
@@ -391,6 +397,8 @@ worker・共有会話の応答では、ペルソナ自身の`model`が優先し�
 | Slackのトークンエラー                      | Botは`xoxb-...`、Appは`connections:write`付きの`xapp-...`か確認                              |
 | `.env`が読まれていないように見える         | 起動ディレクトリとNodeのバージョンを確認。`--repo`基準では読み込まない                       |
 | Slackで何も受信しない                      | `slack`プロセス、Socket Mode、保存したbotイベント、インストール、チャンネルへの招待を確認    |
+| `already running (pid ...)`                | 同じSlack Appのbotがすでに起動中。表示された古いプロセスを終了してから1つだけ起動            |
+| `planning…`から動かない                    | 専用チャンネルで`@devin-squad status`。タイムアウト時は失敗理由とplannerログの保存先を確認   |
 | メンションだけ動いて通常の発言に反応しない | `message.channels` / `message.groups`、history権限、`--no-ambient`を確認                     |
 | `missing_scope`                            | 機能に必要なscopeを追加し、アプリを再インストール                                            |
 | run専用チャンネル・Canvasの作成に失敗する  | 追加権限を確認。チャンネル名の重複や使用できない名前などでも、投稿先は指示元チャンネルに戻る |

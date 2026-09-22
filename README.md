@@ -246,10 +246,19 @@ may differ if you renamed it. Start with:
 @devin-squad strict-reviewer What should we test for this change?
 @devin-squad plan Add parser tests and update the documentation
 @devin-squad run Add parser tests and update the documentation
+@devin-squad status
 ```
 
 `plan` only returns a proposed task list. **`run` plans and immediately starts
 workers**; it does not wait for the Web UI's confirmation step.
+In a run channel, mention the bot with `status` or a natural progress question
+to see the current phase, elapsed time, and task count. Long planning/running
+phases post periodic heartbeats. Failures are reported in both the run channel
+and the originating channel.
+
+Only one bot process may use a given Slack App token. A second launch now fails
+instead of competing for events. After updating, stop old `slack` processes and
+start exactly one current process.
 
 ### 8. Choose ambient or mention-only behavior
 
@@ -434,6 +443,8 @@ not override those direct chats.
 | Slack token error                          | `SLACK_BOT_TOKEN` must be `xoxb-...`; `SLACK_APP_TOKEN` must be `xapp-...` with `connections:write`                                |
 | `.env` appears ignored                     | Check the startup directory and Node version; `.env` is not loaded relative to `--repo`                                            |
 | Slack receives nothing                     | Keep `slack` running; verify Socket Mode, saved bot events, app installation and channel invitation                                |
+| `already running (pid ...)`                | That Slack App already has a local bot process; stop the old process and start exactly one                                         |
+| Stuck at `planning…`                       | Ask `@devin-squad status` in the run channel; after a timeout, inspect the posted error and saved planner log                      |
 | Mentions work but ordinary messages do not | Check `message.channels` / `message.groups`, history scopes, and `--no-ambient`                                                    |
 | `missing_scope`                            | Add the scope required by the feature and reinstall the app                                                                        |
 | Dedicated run channel / canvas fails       | Check optional scopes. Existing names or unsupported channel names can cause channel creation to fall back to the original channel |

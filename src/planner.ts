@@ -21,7 +21,7 @@ Output ONLY a JSON array — no prose, no code fences — with this shape:
 
 export async function planTasks(
   goal: string,
-  opts: { cwd: string; model?: string; timeoutMs: number },
+  opts: { cwd: string; model?: string; timeoutMs: number; logPath?: string },
 ): Promise<SquadTask[]> {
   const r = await runDevin({
     cwd: opts.cwd,
@@ -29,6 +29,7 @@ export async function planTasks(
     permissionMode: 'accept-edits',
     timeoutMs: opts.timeoutMs,
     model: opts.model,
+    logPath: opts.logPath,
   });
 
   if (r.truncated) throw new Error('planner output exceeded 2 MiB');

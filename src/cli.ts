@@ -257,7 +257,7 @@ try {
     await new Promise(() => {});
   } else if (cmd === 'slack') {
     const opts = resolveOptions(flags);
-    startSlack({
+    await startSlack({
       repo: opts.repo,
       concurrency: opts.concurrency,
       permissionMode: opts.permissionMode,
