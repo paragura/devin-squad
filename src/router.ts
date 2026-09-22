@@ -64,3 +64,54 @@ Message from ${author}: ${text.slice(0, 2000)}`;
     .map(n => personas.find(p => p.name === n))
     .filter((p): p is Persona => p !== undefined);
 }
+
+export interface ConversationVerdict {
+  state: 'continue' | 'done' | 'ask_human';
+  /** Present when state === 'ask_human': what to ask the boss. */
+  question?: string;
+}
+
+/**
+ * Goal judge: after each round, decide whether the conversation is done,
+ * needs the human (boss), or should continue. Disposable devin call.
+ */
+export async function judgeConversation(
+  goal: string,
+  context: string[],
+  opts: { model?: string; timeoutMs: number }
+): Promise<ConversationVerdict> {
+  const judgeDir = path.join(os.homedir(), '.devin-squad', 'judge');
+  fs.mkdirSync(judgeDir, { recursive: true });
+  const prompt = `You are the judge of a team chat conversation between AI personas and a human (the boss).
+
+Original message that started this conversation:
+${goal.slice(0, 1000)}
+
+Recent conversation:
+${context.slice(-20).join('\n')}
+
+Decide the state:
+- "done" — the goal is resolved, a conclusion was reached, or the discussion naturally ended
+- "ask_human" — the team needs a decision or input only the boss can give. Include the concrete question to ask.
+- "continue" — personas still have something meaningful to add
+
+Reply with ONLY JSON, e.g. {"state":"done"} or {"state":"ask_human","question":"..."} or {"state":"continue"}`;
+
+  const r = await runDevin({
+    cwd: judgeDir,
+    prompt,
+    permissionMode: 'normal',
+    timeoutMs: opts.timeoutMs,
+    model: opts.model,
+  });
+  cleanSessions(judgeDir);
+  if (r.exitCode !== 0) return { state: 'done' };
+  const m = r.stdout.match(/\{[\s\S]*?\}/);
+  if (!m) return { state: 'done' };
+  try {
+    const v = JSON.parse(m[0]) as ConversationVerdict;
+    return ['done', 'continue', 'ask_human'].includes(v.state) ? v : { state: 'done' };
+  } catch {
+    return { state: 'done' };
+  }
+}

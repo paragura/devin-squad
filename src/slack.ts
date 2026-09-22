@@ -1,14 +1,14 @@
 import { App } from '@slack/bolt';
 import fs from 'node:fs';
 import path from 'node:path';
-import { listPersonas, getPersona, Persona } from './persona.js';
+import { listPersonas, getPersona, Persona, findSecretary } from './persona.js';
 import { personaSayOnce } from './talk.js';
 import { appendMessage } from './store.js';
 import { planTasks } from './planner.js';
 import { runSquad } from './scheduler.js';
 import { newRunDir } from './paths.js';
 import { writeReport } from './report.js';
-import { pickResponders } from './router.js';
+import { pickResponders, judgeConversation } from './router.js';
 import type { SquadOptions, SquadTask } from './types.js';
 
 export interface SlackOptions {
@@ -318,11 +318,12 @@ export function startSlack(opts: SlackOptions): void {
           }
         };
 
-        // Personas talk to each other too: after each round, re-ask the router
-        // whether anyone wants to jump in. Max 3 rounds; nobody answers themselves.
+        // Personas talk to each other: after each round a judge decides whether
+        // the conversation is done, needs the boss (relayed via secretary), or
+        // should continue. Safety cap of 8 rounds; nobody answers themselves.
         let speakers = new Set<string>();
-        for (let round = 0; round <= 3; round++) {
-          const ctx = round === 0 ? context : await channelContext(channel);
+        let ctx = context;
+        for (let round = 0; round < 8; round++) {
           const responders = round === 0
             ? selected
             : (await pickResponders(personas(), 'conversation', ctx.at(-1) ?? '', ctx,
@@ -331,6 +332,30 @@ export function startSlack(opts: SlackOptions): void {
           if (responders.length === 0) break;
           for (const persona of responders) await respondAs(persona, ctx);
           speakers = new Set(responders.map(p => p.name));
+
+          ctx = await channelContext(channel);
+          const verdict = await judgeConversation(text, ctx, {
+            model: opts.routerModel ?? opts.model,
+            timeoutMs: opts.timeoutMs,
+          });
+          if (verdict.state === 'done') break;
+          if (verdict.state === 'ask_human') {
+            const secretary = findSecretary(personas());
+            const ask = await personaSayOnce(
+              secretary,
+              `チームの議論から社長への確認事項があります。簡潔に質問してください: ${verdict.question ?? ''}`,
+              ctx,
+              { timeoutMs: opts.timeoutMs, model: opts.model }
+            );
+            appendMessage(channel, {
+              author: 'persona', name: secretary.name,
+              display: `${secretary.emoji} ${secretary.name}`, text: ask,
+            });
+            await app.client.chat.postMessage({
+              channel, text: ask, ...slackIdentity(secretary),
+            });
+            break; // boss's reply re-triggers the ambient flow naturally
+          }
         }
         await unreact(channel, e.ts, 'eyes');
         void react(channel, e.ts, 'white_check_mark');

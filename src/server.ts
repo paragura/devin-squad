@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { PAGE_HTML } from './webui.js';
 import { listPersonas, getPersona } from './persona.js';
 import { personaSay, personaSayOnce } from './talk.js';
-import { pickResponders } from './router.js';
+import { pickResponders, judgeConversation } from './router.js';
+import { findSecretary } from './persona.js';
 import { appendMessage, readMessages, contextLines, listChannels, channelFilePath } from './store.js';
 import { planTasks } from './planner.js';
 import { runSquad } from './scheduler.js';
@@ -93,11 +94,11 @@ export function serve(opts: ServeOptions): http.Server {
             { model: opts.model, timeoutMs: opts.timeoutMs }
           );
           const replies = [];
-          // Personas keep talking to each other: after each round the router
-          // decides if anyone else wants in. Max 3 rounds, no self-replies.
+          // Personas keep talking to each other: after each round a judge
+          // decides done / ask_human (via secretary) / continue. Safety cap 8.
           let speakers = new Set<string>();
-          for (let round = 0; round <= 3; round++) {
-            const ctx = round === 0 ? context : contextLines(channel);
+          let ctx = context;
+          for (let round = 0; round < 8; round++) {
             const responders = round === 0
               ? selected
               : (await pickResponders(
@@ -117,6 +118,27 @@ export function serve(opts: ServeOptions): http.Server {
               replies.push({ name: p.name, emoji: p.emoji, reply });
             }
             speakers = new Set(responders.map(p => p.name));
+
+            ctx = contextLines(channel);
+            const verdict = await judgeConversation(message, ctx, {
+              model: opts.model, timeoutMs: opts.timeoutMs,
+            });
+            if (verdict.state === 'done') break;
+            if (verdict.state === 'ask_human') {
+              const secretary = findSecretary([...personaMap.values()]);
+              const ask = await personaSayOnce(
+                secretary,
+                `チームの議論から社長への確認事項があります。簡潔に質問してください: ${verdict.question ?? ''}`,
+                ctx,
+                { timeoutMs: opts.timeoutMs, model: opts.model }
+              );
+              appendMessage(channel, {
+                author: 'persona', name: secretary.name,
+                display: `${secretary.emoji} ${secretary.name}`, text: ask,
+              });
+              replies.push({ name: secretary.name, emoji: secretary.emoji, reply: ask });
+              break;
+            }
           }
           json(res, { replies });
         } catch (err) {

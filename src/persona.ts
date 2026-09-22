@@ -62,6 +62,23 @@ export function listPersonas(repo?: string): Persona[] {
   return [...byName.values()];
 }
 
+/** Built-in secretary: relays questions to the boss when personas need a
+ * human decision. Overridden by a persona file named secretary/秘書. */
+const SECRETARY_FALLBACK: Persona = {
+  name: 'secretary',
+  emoji: '🗂️',
+  description: '社長秘書 — チームが人間の判断を必要とするときだけ発言する',
+  prompt:
+    'あなたは社長秘書です。チームの議論を見守り、社長（ユーザー）への確認や判断が必要なときだけ発言します。' +
+    '要点を簡潔にまとめ、結論が出やすい形で質問してください。丁寧だが簡潔に。',
+  source: 'global',
+  file: '',
+};
+
+export function findSecretary(personas: Persona[]): Persona {
+  return personas.find(p => /secretary|秘書|hisho/i.test(p.name)) ?? SECRETARY_FALLBACK;
+}
+
 export function getPersona(name: string, repo?: string): Persona | null {
   return listPersonas(repo).find(p => p.name === name) ?? null;
 }
